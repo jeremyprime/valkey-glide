@@ -28,19 +28,24 @@ public class GlideAsyncClient implements AsyncClient<String> {
         Logger.init(Logger.Level.DEBUG);
 
         if (connectionSettings.clusterMode) {
-            // Build advanced config with tcpNoDelay
-            AdvancedGlideClusterClientConfiguration adv =
-                    AdvancedGlideClusterClientConfiguration.builder()
-                            .refreshTopologyFromInitialNodes(true)
-                            .periodicChecks(
-                                    PeriodicChecksManualInterval.builder().durationInSec(600).build()) // 10 minutes
-                            .tlsAdvancedConfiguration(
-                                    TlsAdvancedConfiguration.builder().useInsecureTLS(true).build())
-                            .build();
+            // Build advanced config
+            var advBuilder = AdvancedGlideClusterClientConfiguration.builder()
+                    .refreshTopologyFromInitialNodes(true)
+                    .periodicChecks(
+                            PeriodicChecksManualInterval.builder().durationInSec(600).build()); // 10 minutes
+
+            // Only add TLS config if TLS is enabled
+            if (connectionSettings.useSsl) {
+                advBuilder.tlsAdvancedConfiguration(
+                        TlsAdvancedConfiguration.builder().useInsecureTLS(true).build());
+            }
+
+            var adv = advBuilder.build();
+
             GlideClusterClientConfiguration config =
                     GlideClusterClientConfiguration.builder()
-                            .address(NodeAddress.builder().host(connectionSettings.host).port(6379).build())
-                            .useTLS(true)
+                            .address(NodeAddress.builder().host(connectionSettings.host).port(connectionSettings.port).build())
+                            .useTLS(connectionSettings.useSsl)
                             .advancedConfiguration(adv)
                             // .readFrom(ReadFrom.AZ_AFFINITY_REPLICAS_AND_PRIMARY)
                             // .clientAZ("us-east-1c")
