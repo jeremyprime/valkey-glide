@@ -18,6 +18,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
 use tokio::runtime::Runtime;
+use crate::TOKIO_TASKS_COMPLETED;
+use crate::Ordering;
+use crate::TOKIO_TASKS_SPAWNED;
 
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
@@ -64,8 +67,8 @@ pub static JVM: std::sync::OnceLock<Arc<JavaVM>> = std::sync::OnceLock::new();
 static RUNTIME: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
 
 // Defaults for runtime and callback workers
-const DEFAULT_RUNTIME_WORKER_THREADS: usize = 1;
-const DEFAULT_CALLBACK_WORKER_THREADS: usize = 2;
+const DEFAULT_RUNTIME_WORKER_THREADS: usize = 1; // 2
+const DEFAULT_CALLBACK_WORKER_THREADS: usize = 2; // 4
 
 // =========================
 // Native buffer registry
@@ -105,7 +108,7 @@ pub(crate) fn get_runtime() -> &'static Runtime {
             DEFAULT_RUNTIME_WORKER_THREADS
         };
 
-        tokio::runtime::Builder::new_multi_thread()
+        let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(worker_threads)
             .max_blocking_threads(worker_threads * 2)
             .enable_all()
@@ -113,7 +116,59 @@ pub(crate) fn get_runtime() -> &'static Runtime {
             .thread_stack_size(2 * 1024 * 1024)
             .thread_keep_alive(std::time::Duration::from_secs(60))
             .build()
-            .expect("Failed to create Tokio runtime")
+            .expect("Failed to create runtime");
+
+        // Spawn a monitor task
+        let handle = runtime.handle().clone();
+        runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                let metrics = handle.metrics();
+                let spawned = TOKIO_TASKS_SPAWNED.load(Ordering::Relaxed);
+                let completed = TOKIO_TASKS_COMPLETED.load(Ordering::Relaxed);
+                let in_flight = spawned - completed;
+                log::warn!(
+                    "TOKIO METRICS | workers={} | spawned={} | completed={} | in_flight={}",
+                    metrics.num_workers(),
+                    spawned,
+                    completed,
+                    in_flight,
+                );
+            }
+        });
+
+        // Heartbeat monitor - should tick every 100ms
+        // If gaps grow, tokio thread isn't getting CPU
+       runtime.spawn(async {
+            let mut last = std::time::Instant::now();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let now = std::time::Instant::now();
+                let gap = now.duration_since(last).as_millis();
+                if gap > 500 {
+                    // Dump thread CPU info when starvation detected
+                    if let Ok(stat) = std::fs::read_to_string("/proc/self/stat") {
+                        let fields: Vec<&str> = stat.split_whitespace().collect();
+                        // field 13 = utime, 14 = stime (CPU ticks)
+                        let utime = fields.get(13).unwrap_or(&"?");
+                        let stime = fields.get(14).unwrap_or(&"?");
+                        let num_threads = fields.get(19).unwrap_or(&"?");
+                        log::warn!(
+                            "TOKIO HEARTBEAT GAP | expected=100ms | actual={}ms | starvation={}ms | utime={} | stime={} | threads={}",
+                            gap, gap - 100, utime, stime, num_threads
+                        );
+                    } else {
+                        log::warn!(
+                            "TOKIO HEARTBEAT GAP | expected=100ms | actual={}ms | starvation={}ms",
+                            gap, gap - 100
+                        );
+                    }
+                }
+                last = now;
+            }
+        });
+
+        runtime
     })
 }
 
@@ -442,7 +497,10 @@ pub fn complete_callback(
 ) {
     let sender = init_callback_workers();
     if let Err(e) = sender.send((jvm, callback_id, result, binary_mode)) {
-        log::error!("Callback queue send failed: {e}");
+        log::error!(
+            "Callback queue send FAILED! callback_id={} | error={} | FUTURE WILL HANG FOREVER",
+            callback_id, e
+        );
     }
 }
 

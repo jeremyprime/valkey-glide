@@ -43,6 +43,10 @@ pub struct RegistryMethodCache {
 }
 
 static REGISTRY_METHOD_CACHE: OnceLock<Mutex<Option<RegistryMethodCache>>> = OnceLock::new();
+use std::sync::atomic::{AtomicI64, Ordering};
+
+static TOKIO_TASKS_SPAWNED: AtomicI64 = AtomicI64::new(0);
+static TOKIO_TASKS_COMPLETED: AtomicI64 = AtomicI64::new(0);
 
 fn get_registry_method_cache(env: &mut JNIEnv) -> Result<&'static RegistryMethodCache, FFIError> {
     let cache_mutex = REGISTRY_METHOD_CACHE.get_or_init(|| Mutex::new(None));
@@ -101,7 +105,10 @@ async fn execute_command_request_and_complete(
     jvm: std::sync::Arc<jni::JavaVM>,
     expect_utf8: bool,
 ) {
+    let start = std::time::Instant::now();
+
     let result: Result<redis::Value, redis::RedisError> = async {
+        let t0 = std::time::Instant::now();
         let mut client = jni_client::ensure_client_for_handle(handle_id)
             .await
             .map_err(|e| {
@@ -111,6 +118,13 @@ async fn execute_command_request_and_complete(
                     e.to_string(),
                 ))
             })?;
+        let ensure_elapsed = t0.elapsed();
+        if ensure_elapsed.as_millis() > 500 {
+            log::warn!(
+                "SLOW ensure_client | callback_id={} | elapsed={}ms",
+                callback_id, ensure_elapsed.as_millis()
+            );
+        }
 
         let root_span_ptr_opt = command_request.root_span_ptr;
         match &command_request.command {
@@ -123,7 +137,6 @@ async fn execute_command_request_and_complete(
                     ))
                 })?;
 
-                // Compute routing
                 let route_box = command_request.route.0;
                 let routing = if let Some(route_box) = route_box {
                     protobuf_bridge::get_route(*route_box, Some(&cmd)).map_err(|e| {
@@ -137,7 +150,17 @@ async fn execute_command_request_and_complete(
                     None
                 };
 
-                let exec = client.send_command(&cmd, routing).await;
+                let t1 = std::time::Instant::now();
+                let exec = client.send_command_with_callback_id(&cmd, routing, Some(callback_id as u32)).await;
+                let send_elapsed = t1.elapsed();
+                if send_elapsed.as_millis() > 500 {
+                    log::warn!(
+                        "SLOW send_command | callback_id={} | elapsed={}ms | result={}",
+                        callback_id,
+                        send_elapsed.as_millis(),
+                        if exec.is_ok() { "ok" } else { "err" }
+                    );
+                }
 
                 if let Some(root_span_ptr) = root_span_ptr_opt
                     && root_span_ptr != 0
@@ -165,7 +188,6 @@ async fn execute_command_request_and_complete(
                 exec
             }
             Some(protobuf_bridge::command_request::Command::Batch(batch)) => {
-                // Build pipeline
                 let mut pipeline = redis::Pipeline::with_capacity(batch.commands.len());
                 if batch.is_atomic {
                     pipeline.atomic();
@@ -181,7 +203,6 @@ async fn execute_command_request_and_complete(
                     pipeline.add_command(valkey_cmd);
                 }
 
-                // Routing for batch
                 let route_box = command_request.route.0;
                 let routing = if let Some(route_box) = route_box {
                     protobuf_bridge::get_route(*route_box, None).map_err(|e| {
@@ -195,7 +216,6 @@ async fn execute_command_request_and_complete(
                     None
                 };
 
-                // Child span as per previous behavior
                 let mut send_batch_span: Option<glide_core::GlideSpan> = None;
                 if let Some(root_span_ptr) = root_span_ptr_opt
                     && root_span_ptr != 0
@@ -268,7 +288,22 @@ async fn execute_command_request_and_complete(
     }
     .await;
 
+    // Log if the whole operation was slow or errored
+    let total_elapsed = start.elapsed();
+    if total_elapsed.as_millis() > 500 || result.is_err() {
+        log::warn!(
+            "COMMAND DONE | callback_id={} | elapsed={}ms | result={}",
+            callback_id,
+            total_elapsed.as_millis(),
+            match &result {
+                Ok(_) => "ok".to_string(),
+                Err(e) => format!("err: {}", e),
+            }
+        );
+    }
+
     let binary_mode = !expect_utf8;
+    log::trace!("COMPLETING CALLBACK | callback_id={}", callback_id);
     jni_client::complete_callback(jvm, callback_id, result, binary_mode);
 }
 
@@ -1370,13 +1405,44 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeCommandAsync
             // Spawn unified async executor
             let runtime = get_runtime();
             let expect_utf8 = true; // executeCommandAsync expects UTF-8 decoding
-            runtime.spawn(execute_command_request_and_complete(
-                handle_id,
-                command_request,
-                callback_id,
-                jvm,
-                expect_utf8,
-            ));
+            TOKIO_TASKS_SPAWNED.fetch_add(1, Ordering::Relaxed);
+            runtime.spawn(async move {
+                let spawn_time = std::time::Instant::now();
+                let scheduling_delay = spawn_time.elapsed();
+                if scheduling_delay.as_millis() > 500 {
+                    log::warn!(
+                        "TASK SCHEDULING DELAY | callback_id={} | delay={}ms",
+                        callback_id, scheduling_delay.as_millis()
+                    );
+                }
+
+                let start = std::time::Instant::now();
+                
+                let result = std::panic::AssertUnwindSafe(
+                    execute_command_request_and_complete(
+                        handle_id, command_request, callback_id, jvm.clone(), expect_utf8,
+                    )
+                );
+                
+                match futures::FutureExt::catch_unwind(result).await {
+                    Ok(()) => {
+                        let elapsed = start.elapsed();
+                        if elapsed.as_secs() > 2 {
+                            log::warn!(
+                                "SLOW COMMAND | callback_id={} | elapsed={}ms",
+                                callback_id, elapsed.as_millis()
+                            );
+                        }
+                    }
+                    Err(panic) => {
+                        log::error!(
+                            "PANIC in command execution! callback_id={} | panic={:?}",
+                            callback_id, panic
+                        );
+                    }
+                }
+                TOKIO_TASKS_COMPLETED.fetch_add(1, Ordering::Relaxed);
+            });
 
             Some(())
         },
