@@ -1,0 +1,7 @@
+# Test artifacts
+pod*.log
+heap_*.hprof
+*.class
+
+# Downloaded/built JARs
+jars/
