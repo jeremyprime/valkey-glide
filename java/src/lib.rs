@@ -1381,16 +1381,44 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeCommandAsync
 ) {
     handle_panics(
         move || {
+            // Get JVM for callback completion
+            let jvm = match env.get_java_vm() {
+                Ok(jvm) => Arc::new(jvm),
+                Err(_) => {
+                    log::error!("JVM error in executeCommandAsync");
+                    return Some(());
+                }
+            };
+
             let raw_bytes = match env.convert_byte_array(&request_bytes) {
                 Ok(b) => b,
                 Err(e) => {
                     log::error!("Failed to read command bytes: {e}");
+                    jni_client::complete_callback(
+                        jvm,
+                        callback_id,
+                        Err(redis::RedisError::from((
+                            redis::ErrorKind::IoError,
+                            "Failed to read command bytes",
+                            format!("{e}"),
+                        ))),
+                        false,
+                    );
                     return Some(());
                 }
             };
 
             if raw_bytes.is_empty() {
                 log::error!("Empty command request bytes");
+                jni_client::complete_callback(
+                    jvm,
+                    callback_id,
+                    Err(redis::RedisError::from((
+                        redis::ErrorKind::IoError,
+                        "Empty command request bytes",
+                    ))),
+                    false,
+                );
                 return Some(());
             }
 
@@ -1413,6 +1441,15 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeCommandAsync
 
                         if has_test_key {
                             log::error!("TEST: Simulating abandoned callback for test key");
+                            jni_client::complete_callback(
+                                jvm.clone(),
+                                callback_id,
+                                Err(redis::RedisError::from((
+                                    redis::ErrorKind::IoError,
+                                    "Test instrumentation error",
+                                ))),
+                                false,
+                            );
                             return Some(());
                         }
                     }
@@ -1424,20 +1461,21 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeCommandAsync
                 Ok(r) => r,
                 Err(e) => {
                     log::error!("Failed to parse protobuf command request: {e}");
+                    jni_client::complete_callback(
+                        jvm.clone(),
+                        callback_id,
+                        Err(redis::RedisError::from((
+                            redis::ErrorKind::IoError,
+                            "Failed to parse protobuf",
+                            format!("{e}"),
+                        ))),
+                        false,
+                    );
                     return Some(());
                 }
             };
 
             let handle_id = client_ptr as u64;
-
-            // Get JVM for callback completion
-            let jvm = match env.get_java_vm() {
-                Ok(jvm) => Arc::new(jvm),
-                Err(_) => {
-                    log::error!("JVM error in executeCommandAsync");
-                    return Some(());
-                }
-            };
             // Spawn unified async executor
             let runtime = get_runtime();
             let expect_utf8 = true; // executeCommandAsync expects UTF-8 decoding
