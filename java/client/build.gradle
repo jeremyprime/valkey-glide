@@ -120,14 +120,25 @@ tasks.register('buildRust', Exec) {
         }
     }
 
+    // Enable test instrumentation feature for test builds
+    def features = []
+    if (project.gradle.startParameter.taskNames.any { it.contains('test') || it.contains('Test') }) {
+        features.add('test-instrumentation')
+    }
+    def featuresArg = features.isEmpty() ? [] : ['--features', features.join(',')]
+
     print("Building Rust with target: '$target'\n")
+    if (!features.isEmpty()) {
+        print("Enabling features: ${features.join(',')}\n")
+    }
+
     if (target.contains("linux") && !target.contains("musl")) {
-        commandLine 'cargo', 'zigbuild', '--target', "$target", '--release'
+        commandLine(['cargo', 'zigbuild', '--target', "$target", '--release'] + featuresArg)
     } else if (target.contains("musl")) {
-        commandLine 'cargo', 'zigbuild', '--target', "$target", '--release'
+        commandLine(['cargo', 'zigbuild', '--target', "$target", '--release'] + featuresArg)
         environment RUSTFLAGS: '-C target-feature=-crt-static'
     } else {
-        commandLine 'cargo', 'build', '--release'
+        commandLine(['cargo', 'build', '--release'] + featuresArg)
     }
     workingDir project.rootDir
     environment CARGO_TERM_COLOR: 'always'
@@ -151,11 +162,16 @@ tasks.register('buildAll') {
 compileJava.dependsOn('protobuf')
 clean.dependsOn('cleanProtobuf', 'cleanRust')
 
+tasks.withType(Test) {
+    // Force rebuild of Rust before running tests to ensure test-instrumentation is enabled
+    dependsOn 'buildRust'
+}
+
 tasks.register('copyNativeLib', Copy) {
     def target
     def jarPath = ""  // Initialize to empty string
     def sourceDir
-    
+
     if (project.hasProperty('target')) {
         target = project.target
         sourceDir = "${projectDir}/../target/${target}/release/"
@@ -182,7 +198,7 @@ tasks.register('copyNativeLib', Copy) {
         jarPath = "natives/windows/${arch}"
         sourceDir = "${projectDir}/../target/release/"
     }
-    
+
     from sourceDir
     include "*.dylib", "*.so", "*.dll"
     into "${sourceSets.main.output.resourcesDir}/${jarPath}"
@@ -315,7 +331,7 @@ shadowJar {
 
     // Only skip classifier if explicitly building an uber JAR
     def isUberJarBuild = System.getenv("UBER_JAR_BUILD") == "true"
-    
+
     // Only add platform classifier for single-platform builds
     if (!isUberJarBuild) {
         if (

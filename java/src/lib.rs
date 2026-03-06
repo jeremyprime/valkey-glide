@@ -1394,6 +1394,31 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeCommandAsync
                 return Some(());
             }
 
+            #[cfg(feature = "test-instrumentation")]
+            {
+                const TEST_KEYS_TO_ABANDON: &[&str] = &["test_abandon_callback_key"];
+
+                // Simulate abandoned callback for specific test keys
+                if let Ok(cmd_req) = protobuf_bridge::parse_command_request(&raw_bytes) {
+                    if let Some(protobuf_bridge::command_request::Command::SingleCommand(cmd)) =
+                        &cmd_req.command
+                    {
+                        let args_array = cmd.args_array();
+                        let has_test_key = args_array.args.iter().any(|arg| {
+                            let arg_str = String::from_utf8_lossy(arg);
+                            TEST_KEYS_TO_ABANDON
+                                .iter()
+                                .any(|test_key| arg_str.contains(test_key))
+                        });
+
+                        if has_test_key {
+                            log::error!("TEST: Simulating abandoned callback for test key");
+                            return Some(());
+                        }
+                    }
+                }
+            }
+
             // Parse actual protobuf CommandRequest using existing glide-core logic
             let command_request = match protobuf_bridge::parse_command_request(&raw_bytes) {
                 Ok(r) => r,

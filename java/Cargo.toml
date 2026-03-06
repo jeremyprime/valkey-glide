@@ -9,6 +9,9 @@ authors = ["Valkey GLIDE Maintainers"]
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+test-instrumentation = []
+
 [dependencies]
 redis = { path = "../glide-core/redis-rs/redis", features = ["aio", "tokio-comp", "connection-manager", "tokio-rustls-comp"] }
 glide-core = { path = "../glide-core", features = [ "proto"] }
