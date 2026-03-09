@@ -106,9 +106,6 @@ fn complete_callback_with_error_on_caller(env: &mut JNIEnv, callback_id: jlong, 
 
 /// Parse request bytes into a CommandRequest, completing the callback with an error on failure.
 /// Returns `Some(request)` on success, `None` if an error occurred (callback already completed).
-/// NOTE: Callers inside `handle_panics` closures must use `let-else` with `return Some(())`
-/// on the None branch — do NOT use `?` which would return `None` from the closure and
-/// be misinterpreted as a panic by `handle_panics`.
 fn parse_request_bytes(
     env: &mut JNIEnv,
     request_bytes: &JByteArray,
@@ -140,7 +137,6 @@ fn parse_request_bytes(
 
 /// Get the JVM Arc, falling back to the cached static if env.get_java_vm() fails.
 /// Completes the callback with an error if both fail.
-/// NOTE: Same `?` caveat as `parse_request_bytes` — use `let-else` in handle_panics closures.
 fn get_jvm_or_complete_error(
     env: &mut JNIEnv,
     callback_id: jlong,
@@ -156,29 +152,6 @@ fn get_jvm_or_complete_error(
                 None
             }
         },
-    }
-}
-
-/// Recover from a panic in an async JNI function.
-/// Re-acquires the JNIEnv from the cached JVM (the calling thread is already JNI-attached,
-/// so `get_env()` returns the existing env without re-attaching).
-/// Sweeps all pending futures — the panicked callback is included in the sweep.
-fn recover_from_panic(callback_id: jlong) {
-    if let Some(jvm) = JVM.get() {
-        if let Ok(mut env) = jvm.get_env() {
-            jni_client::fail_all_pending_futures(
-                &mut env,
-                "Native panic detected, failing all pending requests",
-            );
-        } else {
-            log::error!(
-                "FATAL: Cannot re-acquire JNIEnv after panic — callback {callback_id} and all pending futures will hang"
-            );
-        }
-    } else {
-        log::error!(
-            "FATAL: JVM not cached — callback {callback_id} and all pending futures will hang"
-        );
     }
 }
 
@@ -1422,7 +1395,7 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeCommandAsync
     request_bytes: JByteArray,
     callback_id: jlong,
 ) {
-    let completed = handle_panics(
+    handle_panics(
         move || {
 <<<<<<< HEAD
             let command_request =
@@ -1452,11 +1425,8 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeCommandAsync
             Some(())
         },
         "executeCommandAsync",
-    );
-
-    if completed.is_none() {
-        recover_from_panic(callback_id);
-    }
+    )
+    .unwrap_or(())
 }
 
 /// Close client and release resources.
@@ -1582,7 +1552,7 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeBatchAsync(
     expect_utf8: jni::sys::jboolean,
     callback_id: jlong,
 ) {
-    let completed = handle_panics(
+    handle_panics(
         move || {
 <<<<<<< HEAD
             let command_request =
@@ -1743,11 +1713,7 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeBatchAsync(
             Some(())
         },
         "executeBatchAsync",
-    );
-
-    if completed.is_none() {
-        recover_from_panic(callback_id);
-    }
+    ).unwrap_or(())
 }
 
 /// Execute a binary command asynchronously
@@ -1759,7 +1725,7 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeBinaryComman
     request_bytes: JByteArray,
     callback_id: jlong,
 ) {
-    let completed = handle_panics(
+    handle_panics(
         move || {
 <<<<<<< HEAD
             let command_request =
@@ -1790,11 +1756,8 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeBinaryComman
             Some(())
         },
         "executeBinaryCommandAsync",
-    );
-
-    if completed.is_none() {
-        recover_from_panic(callback_id);
-    }
+    )
+    .unwrap_or(())
 }
 
 /// Execute a script asynchronously using FFI-imported logic
@@ -1812,7 +1775,7 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeScriptAsync(
     route_param: JString,
     expect_utf8: jni::sys::jboolean,
 ) {
-    let completed = handle_panics(
+    handle_panics(
         move || {
 <<<<<<< HEAD
             let jvm =
@@ -2077,11 +2040,8 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeScriptAsync(
             Some(())
         },
         "executeScriptAsync",
-    );
-
-    if completed.is_none() {
-        recover_from_panic(callback_id);
-    }
+    )
+    .unwrap_or(())
 }
 
 /// Update connection password
@@ -2094,7 +2054,7 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_updateConnectionPas
     immediate_auth: jni::sys::jboolean,
     callback_id: jlong,
 ) {
-    let completed = handle_panics(
+    handle_panics(
         move || {
             let password_opt = get_optional_string_param_raw(&mut env, password);
             let handle_id = _client_ptr as u64;
@@ -2146,11 +2106,8 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_updateConnectionPas
             Some(())
         },
         "updateConnectionPassword",
-    );
-
-    if completed.is_none() {
-        recover_from_panic(callback_id);
-    }
+    )
+    .unwrap_or(())
 }
 
 /// Manually refresh IAM authentication token
@@ -2161,7 +2118,7 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_refreshIamToken(
     client_ptr: jlong,
     callback_id: jlong,
 ) {
-    let completed = handle_panics(
+    handle_panics(
         move || {
             let handle_id = client_ptr as u64;
 
@@ -2206,11 +2163,8 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_refreshIamToken(
             Some(())
         },
         "refreshIamToken",
-    );
-
-    if completed.is_none() {
-        recover_from_panic(callback_id);
-    }
+    )
+    .unwrap_or(())
 }
 
 /// JNI bridge for cluster scan that properly manages cursor lifecycle
@@ -2227,7 +2181,7 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeClusterScanA
     expect_utf8: jni::sys::jboolean,
     callback_id: jlong,
 ) {
-    let completed = handle_panics(
+    handle_panics(
         move || {
 <<<<<<< HEAD
             let jvm = get_jvm_or_complete_error(
@@ -2392,11 +2346,8 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeClusterScanA
             Some(())
         },
         "executeClusterScanAsync",
-    );
-
-    if completed.is_none() {
-        recover_from_panic(callback_id);
-    }
+    )
+    .unwrap_or(())
 }
 
 #[derive(Clone)]
