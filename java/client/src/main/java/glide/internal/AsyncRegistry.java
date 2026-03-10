@@ -210,7 +210,7 @@ public final class AsyncRegistry {
     }
 
     /**
-     * Fail all pending futures with a {@link ClosingException}. Called from the native layer when a
+     * Fail all pending futures with an error. Called from the native layer when a
      * fatal infrastructure failure is detected (e.g., callback worker threads terminated or native
      * panic). This ensures no future is left dangling.
      *
@@ -221,11 +221,10 @@ public final class AsyncRegistry {
                 (errorMessage == null || errorMessage.isEmpty())
                         ? "Native callback infrastructure failed"
                         : errorMessage;
-        activeFutures.forEach((id, future) -> future.completeExceptionally(new ClosingException(msg)));
-        activeFutures.clear();
+        Exception ex = new RuntimeException(msg);
 
-        timeoutTasks.values().forEach(task -> task.cancel(false));
-        timeoutTasks.clear();
+        activeFutures.forEach((id, future) -> future.completeExceptionally(ex));
+        activeFutures.clear();
         clientInflightCounts.clear();
     }
 

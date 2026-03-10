@@ -94,6 +94,23 @@ pub fn free_native_buffer(id: u64) -> bool {
     registry.remove(&id).is_some()
 }
 
+static TIMED_OUT_CALLBACKS: std::sync::OnceLock<dashmap::DashMap<jlong, ()>> =
+    std::sync::OnceLock::new();
+
+fn get_timed_out_callbacks() -> &'static dashmap::DashMap<jlong, ()> {
+    TIMED_OUT_CALLBACKS.get_or_init(dashmap::DashMap::new)
+}
+
+pub fn mark_callback_timed_out(callback_id: jlong) {
+    let registry = get_timed_out_callbacks();
+    registry.insert(callback_id, ());
+}
+
+fn take_timed_out_callback(callback_id: jlong) -> bool {
+    let registry = get_timed_out_callbacks();
+    registry.remove(&callback_id).is_some()
+}
+
 /// Initialize or return the shared Tokio runtime.
 pub(crate) fn get_runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {

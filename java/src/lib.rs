@@ -1341,25 +1341,6 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeCommandAsync
     request_bytes: JByteArray,
     callback_id: jlong,
 ) {
-<<<<<<< HEAD
-    handle_panics(
-        move || {
-<<<<<<< HEAD
-            let command_request =
-                parse_request_bytes(&mut env, &request_bytes, callback_id)?;
-            let jvm =
-                get_jvm_or_complete_error(&mut env, callback_id, "executeCommandAsync")?;
-=======
-            let Some(command_request) = parse_request_bytes(&mut env, &request_bytes, callback_id)
-            else {
-                return Some(());
-            };
-            let Some(jvm) = get_jvm_or_complete_error(&mut env, callback_id, "executeCommandAsync")
-            else {
-                return Some(());
-            };
->>>>>>> 02133196d (Address PR review: fix ? operator causing false panic recovery)
-=======
     run_ffi(|| {
         let Some(command_request) = parse_request_bytes(&mut env, &request_bytes, callback_id)
         else {
@@ -1369,7 +1350,6 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeCommandAsync
         else {
             return Some(());
         };
->>>>>>> fb34c6df2 (Rename handle_panics to run_ffi and remove dead parameters)
 
         let handle_id = client_ptr as u64;
         get_runtime().spawn(execute_command_request_and_complete(
@@ -1499,25 +1479,17 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeBatchAsync(
     expect_utf8: jni::sys::jboolean,
     callback_id: jlong,
 ) {
-<<<<<<< HEAD
-    handle_panics(
-        move || {
-<<<<<<< HEAD
-            let command_request =
-                parse_request_bytes(&mut env, &batch_request_bytes, callback_id)?;
-=======
-=======
     run_ffi(|| {
->>>>>>> fb34c6df2 (Rename handle_panics to run_ffi and remove dead parameters)
             let Some(command_request) =
                 parse_request_bytes(&mut env, &batch_request_bytes, callback_id)
             else {
                 return Some(());
             };
->>>>>>> 02133196d (Address PR review: fix ? operator causing false panic recovery)
 
-            // Extract the batch from the command request
-            let batch = match &command_request.command {
+            let route = command_request.route.0.map(|r| *r);
+
+            // Extract the batch from the command request (take ownership to avoid clone)
+            let batch = match command_request.command {
                 Some(command_request::Command::Batch(batch)) => batch,
                 _ => {
                     complete_callback_with_error_on_caller(
@@ -1556,13 +1528,13 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeBatchAsync(
                             }
                             // Create pipeline using existing FFI approach
                             let mut pipeline =
-                                redis::Pipeline::with_capacity(batch_clone.commands.len());
-                            if batch_clone.is_atomic {
+                                redis::Pipeline::with_capacity(batch.commands.len());
+                            if batch.is_atomic {
                                 pipeline.atomic();
                             }
 
                             // Add commands to pipeline using existing bridge logic
-                            for cmd in &batch_clone.commands {
+                            for cmd in &batch.commands {
                                 match protobuf_bridge::create_valkey_command(cmd) {
                                     Ok(valkey_cmd) => pipeline.add_command(valkey_cmd),
                                     Err(e) => {
@@ -1586,13 +1558,13 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeBatchAsync(
                                 })?;
 
                             // Execute using existing client methods
-                            let exec_res = if batch_clone.is_atomic {
+                            let exec_res = if batch.is_atomic {
                                 client
                                     .send_transaction(
                                         &pipeline,
                                         routing,
-                                        batch_clone.timeout,
-                                        batch_clone.raise_on_error.unwrap_or(true),
+                                        batch.timeout,
+                                        batch.raise_on_error.unwrap_or(true),
                                     )
                                     .await
                             } else {
@@ -1600,13 +1572,13 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeBatchAsync(
                                     .send_pipeline(
                                         &pipeline,
                                         routing,
-                                        batch_clone.raise_on_error.unwrap_or(true),
-                                        batch_clone.timeout,
+                                        batch.raise_on_error.unwrap_or(true),
+                                        batch.timeout,
                                         redis::PipelineRetryStrategy {
-                                            retry_server_error: batch_clone
+                                            retry_server_error: batch
                                                 .retry_server_error
                                                 .unwrap_or(false),
-                                            retry_connection_error: batch_clone
+                                            retry_connection_error: batch
                                                 .retry_connection_error
                                                 .unwrap_or(false),
                                         },
@@ -1675,26 +1647,6 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeBinaryComman
     request_bytes: JByteArray,
     callback_id: jlong,
 ) {
-<<<<<<< HEAD
-    handle_panics(
-        move || {
-<<<<<<< HEAD
-            let command_request =
-                parse_request_bytes(&mut env, &request_bytes, callback_id)?;
-            let jvm =
-                get_jvm_or_complete_error(&mut env, callback_id, "executeBinaryCommandAsync")?;
-=======
-            let Some(command_request) = parse_request_bytes(&mut env, &request_bytes, callback_id)
-            else {
-                return Some(());
-            };
-            let Some(jvm) =
-                get_jvm_or_complete_error(&mut env, callback_id, "executeBinaryCommandAsync")
-            else {
-                return Some(());
-            };
->>>>>>> 02133196d (Address PR review: fix ? operator causing false panic recovery)
-=======
     run_ffi(|| {
         let Some(command_request) = parse_request_bytes(&mut env, &request_bytes, callback_id)
         else {
@@ -1705,7 +1657,6 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeBinaryComman
         else {
             return Some(());
         };
->>>>>>> fb34c6df2 (Rename handle_panics to run_ffi and remove dead parameters)
 
         let handle_id = client_ptr as u64;
         get_runtime().spawn(execute_command_request_and_complete(
@@ -1736,19 +1687,6 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeScriptAsync(
     route_param: JString,
     expect_utf8: jni::sys::jboolean,
 ) {
-<<<<<<< HEAD
-    handle_panics(
-        move || {
-<<<<<<< HEAD
-            let jvm =
-                get_jvm_or_complete_error(&mut env, callback_id, "executeScriptAsync")?;
-=======
-            let Some(jvm) = get_jvm_or_complete_error(&mut env, callback_id, "executeScriptAsync")
-            else {
-                return Some(());
-            };
->>>>>>> 02133196d (Address PR review: fix ? operator causing false panic recovery)
-=======
     run_ffi(|| {
         let Some(jvm) = get_jvm_or_complete_error(&mut env, callback_id, "executeScriptAsync")
         else {
@@ -1773,7 +1711,6 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeScriptAsync(
                 return Some(());
             }
         };
->>>>>>> fb34c6df2 (Rename handle_panics to run_ffi and remove dead parameters)
 
         // Extract keys array (supports String[] or byte[][])
         let keys_vec: Result<Vec<Vec<u8>>, FFIError> = (|| {
@@ -2026,27 +1963,11 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_updateConnectionPas
         let handle_id = _client_ptr as u64;
         let do_immediate = immediate_auth != 0;
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-            let jvm = get_jvm_or_complete_error(
-                &mut env,
-                callback_id,
-                "updateConnectionPassword",
-            )?;
-=======
-            let Some(jvm) =
-                get_jvm_or_complete_error(&mut env, callback_id, "updateConnectionPassword")
-            else {
-                return Some(());
-            };
->>>>>>> 02133196d (Address PR review: fix ? operator causing false panic recovery)
-=======
         let Some(jvm) =
             get_jvm_or_complete_error(&mut env, callback_id, "updateConnectionPassword")
         else {
             return Some(());
         };
->>>>>>> fb34c6df2 (Rename handle_panics to run_ffi and remove dead parameters)
 
         get_runtime().spawn(async move {
             let client_result = ensure_client_for_handle(handle_id).await;
@@ -2093,21 +2014,9 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_refreshIamToken(
     run_ffi(|| {
         let handle_id = client_ptr as u64;
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-            let jvm =
-                get_jvm_or_complete_error(&mut env, callback_id, "refreshIamToken")?;
-=======
-            let Some(jvm) = get_jvm_or_complete_error(&mut env, callback_id, "refreshIamToken")
-            else {
-                return Some(());
-            };
->>>>>>> 02133196d (Address PR review: fix ? operator causing false panic recovery)
-=======
         let Some(jvm) = get_jvm_or_complete_error(&mut env, callback_id, "refreshIamToken") else {
             return Some(());
         };
->>>>>>> fb34c6df2 (Rename handle_panics to run_ffi and remove dead parameters)
 
         get_runtime().spawn(async move {
             let client_result = ensure_client_for_handle(handle_id).await;
@@ -2156,29 +2065,11 @@ pub extern "system" fn Java_glide_internal_GlideNativeBridge_executeClusterScanA
     expect_utf8: jni::sys::jboolean,
     callback_id: jlong,
 ) {
-<<<<<<< HEAD
-    handle_panics(
-        move || {
-<<<<<<< HEAD
-            let jvm = get_jvm_or_complete_error(
-                &mut env,
-                callback_id,
-                "executeClusterScanAsync",
-            )?;
-=======
-            let Some(jvm) =
-                get_jvm_or_complete_error(&mut env, callback_id, "executeClusterScanAsync")
-            else {
-                return Some(());
-            };
->>>>>>> 02133196d (Address PR review: fix ? operator causing false panic recovery)
-=======
     run_ffi(|| {
         let Some(jvm) = get_jvm_or_complete_error(&mut env, callback_id, "executeClusterScanAsync")
         else {
             return Some(());
         };
->>>>>>> fb34c6df2 (Rename handle_panics to run_ffi and remove dead parameters)
 
         // Extract cursor ID (null-safe: null means initial cursor)
         let cursor_str = if cursor_id.is_null() {
