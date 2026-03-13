@@ -7,7 +7,6 @@ mod utilities;
 mod cluster_client_tests {
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::Duration;
 
     use crate::test_constants::{HOST_IPV4, HOST_IPV6};
@@ -832,166 +831,109 @@ mod cluster_client_tests {
 
     /// Test for #4990: Failover causes near-zero throughput
     /// See: https://github.com/valkey-io/valkey-glide/issues/4990
+    #[cfg(unix)]
     #[rstest]
-    #[timeout(LONG_CLUSTER_TEST_TIMEOUT*2)]
-    fn test_failover_doesnt_block_healthy_shards() {
+    #[timeout(LONG_CLUSTER_TEST_TIMEOUT)]
+    fn test_reconnect_to_initial_nodes_doesnt_block_throughput() {
         block_on_all(async {
-            const NUM_KEYS: usize = 1000;
-            const NUM_PRIMARIES: u16 = 10;
-            const NUM_REPLICAS: u16 = 1;
-            const MEASUREMENT_DURATION_SECS: u64 = 5;
+            const CONNECTION_TIMEOUT_MS: u64 = 2000;
+            const WINDOW_MS: u64 = 3000;
+            // With bug: each command blocks ~2000ms → ~1 completes in 3000ms
+            // With fix: commands return immediately → 10+ complete in 3000ms
+            const MIN_COMMANDS_WITH_FIX: u32 = 10;
 
-            // Start cluster with replicas
-            let mut test_basics = setup_cluster_with_replicas(
-                TestConfiguration {
-                    cluster_mode: ClusterMode::Enabled,
-                    shared_server: false,
-                    ..Default::default()
-                },
-                NUM_REPLICAS,
-                NUM_PRIMARIES,
-            )
-            .await;
-
-            // Get cluster info
-            let cluster = test_basics.cluster.unwrap();
-            let addresses = cluster.get_server_addresses();
-
-            // Set keys on all shards to establish connections
-            for i in 0..NUM_KEYS {
-                let key = format!("key_{}", i);
-                let mut cmd = redis::cmd("SET");
-                cmd.arg(&key).arg("value");
-                test_basics
-                    .client
-                    .send_command(&mut cmd, None)
-                    .await
-                    .unwrap();
-            }
-
-            // Measure baseline throughput across all shards
-            let baseline_count = Arc::new(AtomicU64::new(0));
-            let stop_flag = Arc::new(AtomicBool::new(false));
-            let mut tasks = Vec::new();
-            for i in 0..NUM_KEYS {
-                let mut client = test_basics.client.clone();
-                let count = baseline_count.clone();
-                let stop = stop_flag.clone();
-                let key_id = i;
-
-                tasks.push(tokio::spawn(async move {
-                    while !stop.load(Ordering::Relaxed) {
-                        let mut cmd = redis::cmd("GET");
-                        cmd.arg(format!("key_{}", key_id));
-                        if client.send_command(&mut cmd, None).await.is_ok() {
-                            count.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }));
-            }
-            tokio::time::sleep(Duration::from_secs(MEASUREMENT_DURATION_SECS)).await;
-            stop_flag.store(true, Ordering::Relaxed);
-            futures::future::join_all(tasks).await;
-            let baseline_qps = baseline_count.load(Ordering::Relaxed) / MEASUREMENT_DURATION_SECS;
-
-            // Choose failover method:
-            // 1. CLUSTER FAILOVER (graceful, no connection loss, no errors expected)
-            // 2. SHUTDOWN NOSAVE (ungraceful, connection loss, triggers reconnection)
-            // 3. DEBUG SEGFAULT (crash, connection loss, triggers reconnection)
-            let failover_method = "SEGFAULT"; // FAILOVER | SHUTDOWN | SEGFAULT
-            match failover_method {
-                "FAILOVER" => {
-                    // Graceful failover via replica
-                    let replica_addr = &addresses[1];
-                    let (replica_host, replica_port) = match replica_addr {
-                        redis::ConnectionAddr::Tcp(h, p) => (h.clone(), *p),
-                        redis::ConnectionAddr::TcpTls {
-                            host: h, port: p, ..
-                        } => (h.clone(), *p),
-                        _ => panic!("Unexpected connection type"),
-                    };
-                    let mut cmd = redis::cmd("CLUSTER");
-                    cmd.arg("FAILOVER");
-                    let routing = RoutingInfo::SingleNode(SingleNodeRoutingInfo::ByAddress {
-                        host: replica_host,
-                        port: replica_port,
-                    });
-                    let _ = test_basics
-                        .client
-                        .send_command(&mut cmd, Some(routing))
-                        .await;
+            // TCP blackhole: accepts connections but never responds.
+            // Simulates a seed node whose DNS hasn't updated after failover.
+            let blackhole_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind blackhole listener");
+            let blackhole_port = blackhole_listener.local_addr().unwrap().port();
+            let held_streams = Arc::new(std::sync::Mutex::new(Vec::<tokio::net::TcpStream>::new()));
+            let held_clone = held_streams.clone();
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = blackhole_listener.accept().await {
+                    held_clone.lock().unwrap().push(stream);
                 }
-                "SHUTDOWN" | "SEGFAULT" => {
-                    // Ungraceful failover via primary crash
-                    let primary_addr = &addresses[0];
-                    let (host, port) = match primary_addr {
-                        redis::ConnectionAddr::Tcp(h, p) => (h.clone(), *p),
-                        redis::ConnectionAddr::TcpTls {
-                            host: h, port: p, ..
-                        } => (h.clone(), *p),
-                        _ => panic!("Unexpected connection type"),
-                    };
-                    let mut cmd = redis::cmd(if failover_method == "SHUTDOWN" {
-                        "SHUTDOWN"
-                    } else {
-                        "DEBUG"
-                    });
-                    if failover_method == "SHUTDOWN" {
-                        cmd.arg("NOSAVE");
-                    } else {
-                        cmd.arg("SEGFAULT");
-                    }
-                    let routing =
-                        RoutingInfo::SingleNode(SingleNodeRoutingInfo::ByAddress { host, port });
-                    let _ = test_basics
-                        .client
-                        .send_command(&mut cmd, Some(routing))
-                        .await;
-                }
-                _ => panic!("Unknown failover method"),
+            });
+
+            let cluster = RedisCluster::new(false, &None, Some(3), Some(0));
+            let cluster_addresses = cluster.get_server_addresses();
+            let pids = cluster.all_server_pids();
+
+            // Add blackhole as a seed node to trigger blocking reconnect behavior
+            let mut initial_nodes: Vec<redis::ConnectionInfo> = cluster_addresses
+                .iter()
+                .map(|addr| redis::ConnectionInfo {
+                    addr: addr.clone(),
+                    redis: redis::RedisConnectionInfo::default(),
+                })
+                .collect();
+            initial_nodes.push(redis::ConnectionInfo {
+                addr: redis::ConnectionAddr::Tcp("127.0.0.1".to_string(), blackhole_port),
+                redis: redis::RedisConnectionInfo::default(),
+            });
+
+            let cluster_client = redis::cluster::ClusterClientBuilder::new(initial_nodes)
+                .periodic_connections_checks(Some(Duration::from_millis(100)))
+                .connection_timeout(Duration::from_millis(CONNECTION_TIMEOUT_MS))
+                .slots_refresh_rate_limit(Duration::from_millis(0), 0)
+                .build()
+                .expect("build cluster client");
+
+            let mut conn: redis::cluster_async::ClusterConnection = cluster_client
+                .get_async_connection(None, None)
+                .await
+                .expect("connect to cluster");
+
+            let ping: redis::RedisResult<redis::Value> = conn
+                .route_command(
+                    &redis::cmd("PING"),
+                    redis::cluster_routing::RoutingInfo::SingleNode(SingleNodeRoutingInfo::Random),
+                )
+                .await;
+            assert!(ping.is_ok(), "PING before kill failed: {:?}", ping);
+
+            // Kill all cluster nodes to trigger reconnect
+            for pid in &pids {
+                std::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .output()
+                    .ok();
             }
 
-            // Measure throughput across shards during failover
-            let failover_count = Arc::new(AtomicU64::new(0));
-            let error_count = Arc::new(AtomicU64::new(0));
-            let stop_flag = Arc::new(AtomicBool::new(false));
-            let mut tasks = Vec::new();
-            for i in 0..NUM_KEYS {
-                let mut client = test_basics.client.clone();
-                let success_count = failover_count.clone();
-                let err_count = error_count.clone();
-                let stop = stop_flag.clone();
-                let key_id = i;
+            // Wait for connection health checks to detect failures
+            tokio::time::sleep(Duration::from_millis(500)).await;
 
-                tasks.push(tokio::spawn(async move {
-                    while !stop.load(Ordering::Relaxed) {
-                        let mut cmd = redis::cmd("GET");
-                        cmd.arg(format!("key_{}", key_id));
-                        match client.send_command(&mut cmd, None).await {
-                            Ok(_) => success_count.fetch_add(1, Ordering::Relaxed),
-                            Err(_) => err_count.fetch_add(1, Ordering::Relaxed),
-                        };
-                    }
-                }));
+            // Measure how many commands complete (success or error) in the window.
+            // Bug: poll_flush blocks on ready!(reconnect_future) → ~1 command per 2000ms
+            // Fix: poll_flush uses now_or_never() → commands return errors immediately
+            let mut completed: u32 = 0;
+            let mut cmd = redis::cmd("GET");
+            cmd.arg("{test}key");
+            let window_start = std::time::Instant::now();
+
+            while window_start.elapsed() < Duration::from_millis(WINDOW_MS) {
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(CONNECTION_TIMEOUT_MS + 500),
+                    conn.route_command(
+                        &cmd,
+                        redis::cluster_routing::RoutingInfo::SingleNode(
+                            SingleNodeRoutingInfo::SpecificNode(Route::new(0, SlotAddr::Master)),
+                        ),
+                    ),
+                )
+                .await;
+                completed += 1;
             }
-            tokio::time::sleep(Duration::from_secs(MEASUREMENT_DURATION_SECS)).await;
-            stop_flag.store(true, Ordering::Relaxed);
-            futures::future::join_all(tasks).await;
-            let failover_qps = failover_count.load(Ordering::Relaxed) / MEASUREMENT_DURATION_SECS;
-            let errors = error_count.load(Ordering::Relaxed);
 
-            // Verify throughput recovers after full cluster failover
-            let expected_min_throughput = baseline_qps * 50 / 100;
-            println!(
-                "Baseline QPS: {}, Failover QPS: {}, Errors: {}",
-                baseline_qps, failover_qps, errors
-            );
             assert!(
-                failover_qps > expected_min_throughput,
-                "Throughput dropped too much during full cluster failover: {} vs baseline {} (expected >{})",
-                failover_qps,
-                baseline_qps,
-                expected_min_throughput
+                completed >= MIN_COMMANDS_WITH_FIX,
+                "Send loop blocked: only {}/{} commands completed in {}ms. \
+                 Each command serialized behind ready!(reconnect_to_initial_nodes) blocking for {}ms.",
+                completed,
+                MIN_COMMANDS_WITH_FIX,
+                WINDOW_MS,
+                CONNECTION_TIMEOUT_MS,
             );
         });
     }
