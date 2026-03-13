@@ -3144,7 +3144,7 @@ where
         Ok((address, conn))
     }
 
-    fn poll_recover(&mut self, _cx: &mut task::Context<'_>) -> Poll<Result<(), RedisError>> {
+    fn poll_recover(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), RedisError>> {
         trace!("entered poll_recover");
 
         let recover_future = match &mut self.state {
@@ -3228,14 +3228,14 @@ where
                 Poll::Ready(Ok(()))
             }
             RecoverFuture::ReconnectToInitialNodes(ref mut handle) => {
-                // Check if the task has completed
-                match handle.now_or_never() {
-                    Some(Ok(())) => {
+                // Poll the task to check if it has completed
+                match Pin::new(handle).poll(cx) {
+                    Poll::Ready(Ok(())) => {
                         trace!("Reconnected to initial nodes");
                         self.state = ConnectionState::PollComplete;
                         Poll::Ready(Ok(()))
                     }
-                    Some(Err(join_err)) => {
+                    Poll::Ready(Err(join_err)) => {
                         if join_err.is_cancelled() {
                             trace!("Reconnect to initial nodes task was aborted");
                             self.state = ConnectionState::PollComplete;
@@ -3246,8 +3246,9 @@ where
                             Poll::Ready(Ok(()))
                         }
                     }
-                    None => {
-                        // Task is still running - return error to indicate connections unavailable
+                    Poll::Pending => {
+                        // Task is still running - stay in Recover state but return error to unblock command
+                        trace!("Reconnect to initial nodes still in progress");
                         Poll::Ready(Err(RedisError::from((
                             ErrorKind::AllConnectionsUnavailable,
                             "Reconnecting to initial nodes",
@@ -3256,14 +3257,14 @@ where
                 }
             }
             RecoverFuture::Reconnect(ref mut handle) => {
-                // Check if the task has completed
-                match handle.now_or_never() {
-                    Some(Ok(_notifiers)) => {
+                // Poll the task to check if it has completed
+                match Pin::new(handle).poll(cx) {
+                    Poll::Ready(Ok(_notifiers)) => {
                         trace!("Reconnected connections");
                         self.state = ConnectionState::PollComplete;
                         Poll::Ready(Ok(()))
                     }
-                    Some(Err(join_err)) => {
+                    Poll::Ready(Err(join_err)) => {
                         if join_err.is_cancelled() {
                             trace!("Reconnect task was aborted");
                             self.state = ConnectionState::PollComplete;
@@ -3277,8 +3278,9 @@ where
                             Poll::Ready(Ok(()))
                         }
                     }
-                    None => {
-                        // Task is still running - return error to indicate connections unavailable
+                    Poll::Pending => {
+                        // Task is still running - stay in Recover state but return error to unblock command
+                        trace!("Reconnect still in progress");
                         Poll::Ready(Err(RedisError::from((
                             ErrorKind::AllConnectionsUnavailable,
                             "Reconnecting",
