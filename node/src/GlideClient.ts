@@ -38,6 +38,7 @@ import {
     createFunctionLoad,
     createFunctionRestore,
     createFunctionStats,
+    createGetSubscriptions,
     createInfo,
     createLastSave,
     createLolwut,
@@ -99,6 +100,43 @@ export namespace GlideClientConfiguration {
 }
 
 /**
+ * Represents the subscription state for a standalone client.
+ *
+ * @remarks
+ * This interface provides information about the current PubSub subscriptions for a standalone client.
+ * It includes both the desired subscriptions (what the client wants to maintain) and the actual
+ * subscriptions (what is currently established on the server).
+ *
+ * The subscriptions are organized by channel mode:
+ * - {@link GlideClientConfiguration.PubSubChannelModes.Exact | Exact}: Exact channel names
+ * - {@link GlideClientConfiguration.PubSubChannelModes.Pattern | Pattern}: Channel patterns using glob-style matching
+ *
+ * @example
+ * ```typescript
+ * const state = await client.getSubscriptions();
+ * console.log("Desired exact channels:", state.desiredSubscriptions[GlideClientConfiguration.PubSubChannelModes.Exact]);
+ * console.log("Actual exact channels:", state.actualSubscriptions[GlideClientConfiguration.PubSubChannelModes.Exact]);
+ * ```
+ */
+export interface StandalonePubSubState {
+    /**
+     * Desired subscriptions organized by channel mode.
+     * These are the subscriptions the client wants to maintain.
+     */
+    desiredSubscriptions: Partial<
+        Record<GlideClientConfiguration.PubSubChannelModes, Set<GlideString>>
+    >;
+
+    /**
+     * Actual subscriptions currently active on the server.
+     * These are the subscriptions that are actually established.
+     */
+    actualSubscriptions: Partial<
+        Record<GlideClientConfiguration.PubSubChannelModes, Set<GlideString>>
+    >;
+}
+
+/**
  * Configuration options for creating a {@link GlideClient | GlideClient}.
  *
  * Extends `BaseClientConfiguration` with properties specific to `GlideClient`, such as
@@ -135,6 +173,24 @@ export type GlideClientConfiguration = BaseClientConfiguration & {
      * Advanced configuration settings for the client.
      */
     advancedConfiguration?: AdvancedGlideClientConfiguration;
+    /**
+     * When true, enables read-only mode for the standalone client.
+     *
+     * In read-only mode:
+     * - The client skips primary node detection (INFO REPLICATION command)
+     * - All connected nodes are treated as valid read targets
+     * - Write commands are blocked and will return an error
+     * - The default ReadFrom strategy becomes PreferReplica if not explicitly set
+     *
+     * This is useful for connecting to replica-only deployments or when you want to
+     * prevent accidental write operations.
+     *
+     * Note: read-only mode is not compatible with AZAffinity or AZAffinityReplicasAndPrimary
+     * read strategies.
+     *
+     * Defaults to false.
+     */
+    readOnly?: boolean;
 };
 
 /**
@@ -176,6 +232,11 @@ export class GlideClient extends BaseClient {
                 options.advancedConfiguration,
                 configuration,
             );
+        }
+
+        // Set read-only mode if specified
+        if (options.readOnly !== undefined) {
+            configuration.readOnly = options.readOnly;
         }
 
         return configuration;
@@ -1066,5 +1127,29 @@ export class GlideClient extends BaseClient {
         options?: ScanOptions & DecoderOption,
     ): Promise<[GlideString, GlideString[]]> {
         return this.createWritePromise(createScan(cursor, options), options);
+    }
+
+    /**
+     * Returns the current subscription state for the client.
+     *
+     * @see {@link https://valkey.io/commands/pubsub/|valkey.io} for details.
+     *
+     * @returns A promise that resolves to the subscription state containing
+     *          desired and actual subscriptions organized by channel mode.
+     *
+     * @example
+     * ```typescript
+     * const state = await client.getSubscriptions();
+     * console.log("Desired exact channels:", state.desiredSubscriptions[GlideClientConfiguration.PubSubChannelModes.Exact]);
+     * console.log("Actual exact channels:", state.actualSubscriptions[GlideClientConfiguration.PubSubChannelModes.Exact]);
+     * ```
+     */
+    public async getSubscriptions(): Promise<StandalonePubSubState> {
+        const response = await this.createWritePromise<unknown[]>(
+            createGetSubscriptions(),
+        );
+        return this.parseGetSubscriptionsResponse<GlideClientConfiguration.PubSubChannelModes>(
+            response,
+        );
     }
 }
