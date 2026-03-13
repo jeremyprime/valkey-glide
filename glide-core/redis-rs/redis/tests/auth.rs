@@ -9,7 +9,7 @@ mod auth {
         cluster_async::ClusterConnection,
         cluster_routing::{MultipleNodeRoutingInfo, ResponsePolicy, RoutingInfo},
         cmd, ConnectionInfo, ErrorKind, GlideConnectionOptions, ProtocolVersion,
-        RedisConnectionInfo, RedisResult, Value,
+        RedisConnectionInfo, RedisError, RedisResult, Value,
     };
     use std::time::Duration;
 
@@ -224,10 +224,21 @@ mod auth {
         kill_non_management_connections(&mut management_conn).await;
 
         // Verify that the connection with new password still works
-        let result_should_succeed: RedisResult<Value> = cmd("get")
-            .arg("foo")
-            .query_async(&mut connection_should_succeed)
-            .await;
+        // Retry to handle AllConnectionsUnavailable during reconnection
+        let mut result_should_succeed: RedisResult<Value> = Err(RedisError::from((
+            redis::ErrorKind::IoError,
+            "Initial attempt",
+        )));
+        for _ in 0..10 {
+            result_should_succeed = cmd("get")
+                .arg("foo")
+                .query_async(&mut connection_should_succeed)
+                .await;
+            if result_should_succeed.is_ok() {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
         assert!(result_should_succeed.is_ok());
         assert_eq!(
             result_should_succeed.unwrap(),

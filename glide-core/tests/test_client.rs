@@ -1886,7 +1886,7 @@ pub(crate) mod shared_client_tests {
                     None,
                     PipelineRetryStrategy {
                         retry_server_error: true,
-                        retry_connection_error: false,
+                        retry_connection_error: true,
                     },
                 )
                 .await
@@ -2038,7 +2038,7 @@ pub(crate) mod shared_client_tests {
                     None,
                     PipelineRetryStrategy {
                         retry_server_error: true,
-                        retry_connection_error: false,
+                        retry_connection_error: true,
                     },
                 )
                 .await

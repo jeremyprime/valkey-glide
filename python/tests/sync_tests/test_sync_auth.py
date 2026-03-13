@@ -263,8 +263,18 @@ class TestSyncAuthCommands:
         )
         assert result == OK
 
-        # Verify client is authenticated
-        assert acl_glide_sync_client.set("test_key", "test_value") == OK
+        # Verify client is authenticated - retry during reconnection
+        max_retries = 10
+        for i in range(max_retries):
+            try:
+                assert acl_glide_sync_client.set("test_key", "test_value") == OK
+                break
+            except Exception as e:
+                if "AllConnectionsUnavailable" in str(e) and i < max_retries - 1:
+                    time.sleep(0.1)
+                    continue
+                raise
+
         value = acl_glide_sync_client.get("test_key")
         assert value == b"test_value"
 

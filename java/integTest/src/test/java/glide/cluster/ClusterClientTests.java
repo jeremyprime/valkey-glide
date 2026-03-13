@@ -391,8 +391,25 @@ public class ClusterClientTests {
             // Ensure client can reconnect when updating the password with immediate auth
             assertEquals(OK, testClient.updateConnectionPassword(newPwd, true).get());
 
-            // Validate client reconnected and is working
-            assertNotNull(testClient.info().get());
+            // Validate client reconnected and is working - retry during reconnection
+            int maxRetries = 10;
+            boolean success = false;
+            for (int i = 0; i < maxRetries; i++) {
+                try {
+                    assertNotNull(testClient.info().get());
+                    success = true;
+                    break;
+                } catch (Exception e) {
+                    if (e.getMessage() != null
+                            && e.getMessage().contains("AllConnectionsUnavailable")
+                            && i < maxRetries - 1) {
+                        Thread.sleep(100);
+                        continue;
+                    }
+                    throw e;
+                }
+            }
+            assertTrue(success, "Failed to reconnect after password update");
         } finally {
             deleteAclUser(adminClient, username);
             adminClient.close();

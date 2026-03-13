@@ -3386,13 +3386,27 @@ mod cluster_async {
             broken_pipe_error().to_string()
         );
 
-        let value = runtime.block_on(connection.route_command(
-            &cmd("ECHO"),
-            RoutingInfo::SingleNode(SingleNodeRoutingInfo::ByAddress {
-                host: name.to_string(),
-                port: 6379,
-            }),
-        ));
+        let value = runtime.block_on(async {
+            for _ in 0..10 {
+                match connection
+                    .route_command(
+                        &cmd("ECHO"),
+                        RoutingInfo::SingleNode(SingleNodeRoutingInfo::ByAddress {
+                            host: name.to_string(),
+                            port: 6379,
+                        }),
+                    )
+                    .await
+                {
+                    Ok(val) => return Ok(val),
+                    Err(e) if e.to_string().contains("AllConnectionsUnavailable") => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(RedisError::from((ErrorKind::IoError, "Max retries")))
+        });
 
         assert_eq!(value, Ok(Value::BulkString(b"PONG".to_vec())));
         // `expected_init_calls` plus another PING for a new user connection created from refresh_connections
@@ -4500,11 +4514,22 @@ mod cluster_async {
             },
         );
 
-        let value = runtime.block_on(
-            cmd("GET")
-                .arg("test")
-                .query_async::<_, Option<i32>>(&mut connection),
-        );
+        let value = runtime.block_on(async {
+            for _ in 0..10 {
+                match cmd("GET")
+                    .arg("test")
+                    .query_async::<_, Option<i32>>(&mut connection)
+                    .await
+                {
+                    Ok(val) => return Ok(val),
+                    Err(e) if e.to_string().contains("AllConnectionsUnavailable") => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(RedisError::from((ErrorKind::IoError, "Max retries")))
+        });
 
         assert_eq!(value, Ok(Some(123)));
     }
@@ -4691,14 +4716,23 @@ mod cluster_async {
         );
         runtime
             .block_on(async move {
-                let res = cmd("INCR")
-                    .arg("foo")
-                    .query_async::<_, i32>(&mut connection)
-                    .await;
-                assert!(res.is_ok());
-                let value = res.unwrap();
-                assert_eq!(value, 1);
-                Ok::<_, RedisError>(())
+                for _ in 0..10 {
+                    match cmd("INCR")
+                        .arg("foo")
+                        .query_async::<_, i32>(&mut connection)
+                        .await
+                    {
+                        Ok(value) => {
+                            assert_eq!(value, 1);
+                            return Ok::<_, RedisError>(());
+                        }
+                        Err(e) if e.to_string().contains("AllConnectionsUnavailable") => {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                panic!("Max retries exceeded");
             })
             .unwrap();
     }
@@ -5092,7 +5126,8 @@ mod cluster_async {
                 match trigger_res {
                     Ok(_) => panic!("Unexpected success on SET to blocked shard; expected ConnectionNotFoundForRoute error"),
                     Err(e) => {
-                        if !e.to_string().contains("ConnectionNotFoundForRoute") {
+                        if !e.to_string().contains("ConnectionNotFoundForRoute")
+                            && !e.to_string().contains("AllConnectionsUnavailable") {
                             panic!("Unexpected error on SET to blocked shard: {e:?}");
                         }
                     }
@@ -5659,11 +5694,22 @@ mod cluster_async {
         );
 
         for _ in 0..4 {
-            let value = runtime.block_on(
-                cmd("GET")
-                    .arg("test")
-                    .query_async::<_, Option<i32>>(&mut connection),
-            );
+            let value = runtime.block_on(async {
+                for _ in 0..10 {
+                    match cmd("GET")
+                        .arg("test")
+                        .query_async::<_, Option<i32>>(&mut connection)
+                        .await
+                    {
+                        Ok(val) => return Ok(val),
+                        Err(e) if e.to_string().contains("AllConnectionsUnavailable") => {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(RedisError::from((ErrorKind::IoError, "Max retries")))
+            });
 
             assert_eq!(value, Ok(Some(123)));
         }

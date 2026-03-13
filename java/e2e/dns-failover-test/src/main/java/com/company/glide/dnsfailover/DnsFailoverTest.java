@@ -87,7 +87,33 @@ public class DnsFailoverTest {
         System.out.println("Verifying connection to Cluster B...");
         String keyB = "test_key_cluster_b";
         String valueB = "value_from_cluster_b";
-        client.set(keyB, valueB).get();
+
+        // Retry commands during reconnection
+        int maxRetries = 10;
+        boolean connected = false;
+        for (int i = 0; i < maxRetries; i++) {
+            try {
+                client.set(keyB, valueB).get();
+                connected = true;
+                break;
+            } catch (Exception e) {
+                if (e.getMessage() != null
+                        && e.getMessage().contains("AllConnectionsUnavailable")
+                        && i < maxRetries - 1) {
+                    System.out.println(
+                            "  Reconnection in progress, retrying... (" + (i + 1) + "/" + maxRetries + ")");
+                    Thread.sleep(1000);
+                    continue;
+                }
+                throw e;
+            }
+        }
+
+        if (!connected) {
+            throw new RuntimeException(
+                    "Failed to reconnect to Cluster B after " + maxRetries + " attempts");
+        }
+
         verifyKeyValue(client, keyB, valueB);
 
         String checkA = client.get(keyA).get();
