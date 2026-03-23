@@ -6,7 +6,7 @@ use futures_util::{
 };
 #[cfg(feature = "aio")]
 use std::pin::Pin;
-use std::{borrow::Borrow, fmt, io};
+use std::{borrow::Borrow, fmt, io, sync::OnceLock};
 
 use crate::connection::ConnectionLike;
 use crate::pipeline::Pipeline;
@@ -40,6 +40,9 @@ pub struct Cmd {
     /// timeout from internal pipeline cleanup.
     #[cfg(feature = "cluster-async")]
     inflight_tracker: Option<crate::cluster_async::InflightRequestTracker>,
+    /// Cached result of `Routable::command()`. Populated on first access to
+    /// avoid repeated heap allocations and uppercase conversions.
+    cached_command: OnceLock<Option<Vec<u8>>>,
 }
 
 /// The PING command used to fence other commands for ordering guarantees
@@ -351,6 +354,7 @@ impl Cmd {
             is_fenced: false,
             #[cfg(feature = "cluster-async")]
             inflight_tracker: None,
+            cached_command: OnceLock::new(),
         }
     }
 
@@ -365,6 +369,7 @@ impl Cmd {
             #[cfg(feature = "cluster-async")]
             inflight_tracker: None,
             is_fenced: false,
+            cached_command: OnceLock::new(),
         }
     }
 
@@ -470,6 +475,13 @@ impl Cmd {
     #[inline]
     pub fn in_scan_mode(&self) -> bool {
         self.cursor.is_some()
+    }
+
+    /// Returns a reference to the internal `OnceLock` used to cache the
+    /// result of `Routable::command()`.
+    #[inline]
+    pub(crate) fn cached_command(&self) -> &OnceLock<Option<Vec<u8>>> {
+        &self.cached_command
     }
 
     /// Sends the command as query to the connection and converts the

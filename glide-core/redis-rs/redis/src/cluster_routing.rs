@@ -1208,6 +1208,37 @@ pub trait Routable {
 }
 
 impl Routable for Cmd {
+    /// Overrides the default implementation to cache the result in a `OnceLock`,
+    /// avoiding repeated heap allocations and uppercase conversions on each call.
+    fn command(&self) -> Option<Vec<u8>> {
+        self.cached_command()
+            .get_or_init(|| {
+                let primary_command = self.arg_idx(0).map(|x| x.to_ascii_uppercase())?;
+                let mut primary_command = match primary_command.as_slice() {
+                    b"XGROUP" | b"OBJECT" | b"SLOWLOG" | b"FUNCTION" | b"MODULE" | b"COMMAND"
+                    | b"PUBSUB" | b"CONFIG" | b"MEMORY" | b"XINFO" | b"CLIENT" | b"ACL"
+                    | b"SCRIPT" | b"CLUSTER" | b"LATENCY" => primary_command,
+                    _ => {
+                        return Some(primary_command);
+                    }
+                };
+
+                Some(match self.arg_idx(1) {
+                    Some(secondary_command) => {
+                        let previous_len = primary_command.len();
+                        primary_command.reserve(secondary_command.len() + 1);
+                        primary_command.extend(b" ");
+                        primary_command.extend(secondary_command);
+                        let current_len = primary_command.len();
+                        primary_command[previous_len + 1..current_len].make_ascii_uppercase();
+                        primary_command
+                    }
+                    None => primary_command,
+                })
+            })
+            .clone()
+    }
+
     fn arg_idx(&self, idx: usize) -> Option<&[u8]> {
         self.arg_idx(idx)
     }
