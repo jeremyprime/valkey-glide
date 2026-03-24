@@ -9,7 +9,7 @@ use crate::{cluster::TlsMode, ErrorKind, RedisError, RedisResult, Value};
 #[cfg(all(feature = "cluster-async", not(feature = "tokio-comp")))]
 use async_std::sync::RwLock;
 use logger_core::log_warn;
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::sync::atomic::AtomicBool;
@@ -121,6 +121,7 @@ pub(crate) fn parse_and_count_slots(
     let mut slots = Vec::with_capacity(2);
     let mut slots_count = 0;
     let mut address_to_ip_map = HashMap::new();
+    let mut seen_addresses = HashSet::<String>::new();
 
     if let Value::Array(items) = raw_slot_resp {
         let mut iter = items.iter();
@@ -262,6 +263,16 @@ pub(crate) fn parse_and_count_slots(
 
                         let connection_addr =
                             get_connection_addr(canonical_hostname, port, tls, None).to_string();
+
+                        // Reuse previously seen address strings to reduce allocations
+                        // when the same node appears across multiple slot ranges
+                        let connection_addr = match seen_addresses.get(&connection_addr) {
+                            Some(existing) => existing.clone(),
+                            None => {
+                                seen_addresses.insert(connection_addr.clone());
+                                connection_addr
+                            }
+                        };
 
                         // Store IP mapping if we have an IP for this node
                         if let Some(ip) = resolved_ip {
