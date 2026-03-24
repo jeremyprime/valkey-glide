@@ -67,7 +67,7 @@ where
             None => Ok(node),
             Some(conn_type) => connect_and_check(
                 addr,
-                params.clone(),
+                params,
                 None,
                 conn_type,
                 Some(node),
@@ -79,7 +79,7 @@ where
     } else {
         connect_and_check(
             addr,
-            params.clone(),
+            params,
             None,
             conn_type,
             None,
@@ -105,7 +105,7 @@ where
 
 pub(crate) async fn connect_and_check_all_connections<C>(
     addr: &str,
-    params: ClusterParams,
+    params: &ClusterParams,
     socket_addr: Option<SocketAddr>,
     glide_connection_options: GlideConnectionOptions,
 ) -> ConnectAndCheckResult<C>
@@ -116,19 +116,13 @@ where
         // User connection
         create_connection(
             addr,
-            params.clone(),
+            params,
             socket_addr,
             false,
             glide_connection_options.clone(),
         ),
         // Management connection
-        create_connection(
-            addr,
-            params.clone(),
-            socket_addr,
-            true,
-            glide_connection_options,
-        ),
+        create_connection(addr, params, socket_addr, true, glide_connection_options),
     )
     .await
     {
@@ -168,7 +162,7 @@ where
 
 async fn connect_and_check_only_management_conn<C>(
     addr: &str,
-    params: ClusterParams,
+    params: &ClusterParams,
     socket_addr: Option<SocketAddr>,
     prev_node: AsyncClusterNode<C>,
     disconnect_notifier: Option<Box<dyn DisconnectNotifier>>,
@@ -184,7 +178,7 @@ where
 
     match create_connection::<C>(
         addr,
-        params.clone(),
+        params,
         socket_addr,
         true,
         GlideConnectionOptions {
@@ -270,7 +264,7 @@ impl<C> From<RedisResult<AsyncClusterNode<C>>> for ConnectAndCheckResult<C> {
 #[doc(hidden)]
 pub async fn connect_and_check<C>(
     addr: &str,
-    params: ClusterParams,
+    params: &ClusterParams,
     socket_addr: Option<SocketAddr>,
     conn_type: RefreshConnectionType,
     node: Option<AsyncClusterNode<C>>,
@@ -283,7 +277,7 @@ where
         RefreshConnectionType::OnlyUserConnection => {
             let user_conn = match create_and_setup_user_connection(
                 addr,
-                params.clone(),
+                params,
                 socket_addr,
                 glide_connection_options,
             )
@@ -328,28 +322,22 @@ where
 
 async fn create_and_setup_user_connection<C>(
     node: &str,
-    params: ClusterParams,
+    params: &ClusterParams,
     socket_addr: Option<SocketAddr>,
     glide_connection_options: GlideConnectionOptions,
 ) -> RedisResult<ConnectionDetails<C>>
 where
     C: ConnectionLike + Connect + Send + 'static,
 {
-    let mut connection: ConnectionDetails<C> = create_connection(
-        node,
-        params.clone(),
-        socket_addr,
-        false,
-        glide_connection_options,
-    )
-    .await?;
+    let mut connection: ConnectionDetails<C> =
+        create_connection(node, params, socket_addr, false, glide_connection_options).await?;
     setup_user_connection(&mut connection, params).await?;
     Ok(connection)
 }
 
 async fn setup_user_connection<C>(
     conn_details: &mut ConnectionDetails<C>,
-    params: ClusterParams,
+    params: &ClusterParams,
 ) -> RedisResult<()>
 where
     C: ConnectionLike + Connect + Send + 'static,
@@ -384,7 +372,7 @@ where
 
 async fn create_connection<C>(
     node: &str,
-    params: ClusterParams,
+    params: &ClusterParams,
     socket_addr: Option<SocketAddr>,
     is_management: bool,
     mut glide_connection_options: GlideConnectionOptions,

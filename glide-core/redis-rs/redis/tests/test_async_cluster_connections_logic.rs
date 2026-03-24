@@ -68,7 +68,7 @@ mod test_connect_and_check {
 
         let result = connect_and_check::<MockConnection>(
             &format!("{name}:6379"),
-            ClusterParams::default(),
+            &ClusterParams::default(),
             None,
             RefreshConnectionType::AllConnections,
             None,
@@ -104,7 +104,7 @@ mod test_connect_and_check {
 
         let result = connect_and_check::<MockConnection>(
             &format!("{name}:6379"),
-            params.clone(),
+            &params,
             None,
             RefreshConnectionType::AllConnections,
             None,
@@ -122,7 +122,7 @@ mod test_connect_and_check {
 
         let result = connect_and_check::<MockConnection>(
             &format!("{name}:6379"),
-            params,
+            &params,
             None,
             RefreshConnectionType::AllConnections,
             None,
@@ -155,7 +155,7 @@ mod test_connect_and_check {
         // The first connection will have 0.0.0.0 IP, the second 1.0.0.0
         let result = connect_and_check::<MockConnection>(
             &format!("{name}:6379"),
-            ClusterParams::default(),
+            &ClusterParams::default(),
             None,
             RefreshConnectionType::AllConnections,
             None,
@@ -192,7 +192,7 @@ mod test_connect_and_check {
 
         let result = connect_and_check::<MockConnection>(
             &format!("{name}:6379"),
-            ClusterParams::default(),
+            &ClusterParams::default(),
             None,
             RefreshConnectionType::AllConnections,
             None,
@@ -244,7 +244,7 @@ mod test_connect_and_check {
 
         let result = connect_and_check::<MockConnection>(
             &format!("{name}:6379"),
-            ClusterParams::default(),
+            &ClusterParams::default(),
             None,
             RefreshConnectionType::OnlyManagementConnection,
             Some(node),
@@ -292,7 +292,7 @@ mod test_connect_and_check {
 
         let result = connect_and_check::<MockConnection>(
             &format!("{name}:6379"),
-            ClusterParams::default(),
+            &ClusterParams::default(),
             None,
             RefreshConnectionType::OnlyManagementConnection,
             Some(node),
@@ -356,7 +356,7 @@ mod test_connect_and_check {
 
         let result = connect_and_check::<MockConnection>(
             &format!("{name}:6379"),
-            ClusterParams::default(),
+            &ClusterParams::default(),
             None,
             RefreshConnectionType::OnlyUserConnection,
             Some(node),

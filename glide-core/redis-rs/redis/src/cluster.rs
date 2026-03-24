@@ -407,7 +407,7 @@ where
     }
 
     fn connect(&self, node: &str) -> RedisResult<C> {
-        let info = get_connection_info(node, self.cluster_params.clone())?;
+        let info = get_connection_info(node, &self.cluster_params)?;
 
         let mut conn = C::connect(info, Some(self.cluster_params.connection_timeout))?;
         if self.cluster_params.read_from_replicas
@@ -988,7 +988,7 @@ fn get_random_connection<C: ConnectionLike + Connect + Sized>(
 // - Returned from redis via the ASK/MOVED response
 pub(crate) fn get_connection_info(
     node: &str,
-    cluster_params: ClusterParams,
+    cluster_params: &ClusterParams,
 ) -> RedisResult<ConnectionInfo> {
     let invalid_error = || (ErrorKind::InvalidClientConfig, "Invalid node string");
 
@@ -1006,13 +1006,13 @@ pub(crate) fn get_connection_info(
             host.to_string(),
             port,
             cluster_params.tls,
-            cluster_params.tls_params,
+            cluster_params.tls_params.clone(),
         ),
         redis: RedisConnectionInfo {
-            password: cluster_params.password,
-            username: cluster_params.username,
-            client_name: cluster_params.client_name,
-            lib_name: cluster_params.lib_name,
+            password: cluster_params.password.clone(),
+            username: cluster_params.username.clone(),
+            client_name: cluster_params.client_name.clone(),
+            lib_name: cluster_params.lib_name.clone(),
             protocol: cluster_params.protocol,
             db: cluster_params.database_id,
         },
@@ -1074,13 +1074,13 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let res = get_connection_info(input, ClusterParams::default());
+            let res = get_connection_info(input, &ClusterParams::default());
             assert_eq!(res.unwrap().addr, expected);
         }
 
         let cases = vec![":0", "[]:6379"];
         for input in cases {
-            let res = get_connection_info(input, ClusterParams::default());
+            let res = get_connection_info(input, &ClusterParams::default());
             assert_eq!(
                 res.err(),
                 Some(RedisError::from((

@@ -1428,7 +1428,7 @@ where
                     async move {
                         let result = connect_and_check::<C>(
                             &node_addr,
-                            params,
+                            &params,
                             socket_addr,
                             RefreshConnectionType::AllConnections,
                             None,
