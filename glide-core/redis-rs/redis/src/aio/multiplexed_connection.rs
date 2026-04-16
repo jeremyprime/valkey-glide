@@ -521,25 +521,41 @@ where
     ) -> Result<Value, RedisError> {
         let (sender, receiver) = oneshot::channel();
 
-        self.sender
-            .send(PipelineMessage {
+        // Timeout on pipeline send to detect dead connections. The pipeline channel
+        // is bounded (50 slots). Under normal operation, a slot frees in microseconds.
+        // Defaults to 100ms unless request_timeout is shorter, in which case will be 1/4
+        // request_timeout with a minimum of 1ms.
+        let send_timeout = std::cmp::max(
+            std::cmp::min(timeout / 4, std::time::Duration::from_millis(100)),
+            std::time::Duration::from_millis(1),
+        );
+        match tokio::time::timeout(
+            send_timeout,
+            self.sender.send(PipelineMessage {
                 input,
                 pipeline_response_count,
                 output: sender,
                 is_transaction: is_atomic,
                 is_fenced,
-            })
-            .await
-            .map_err(|err| {
-                // If an error occurs here, it means the request never reached the server, as guaranteed
-                // by the 'send' function. Since the server did not receive the data, it is safe to retry
-                // the request.
-                RedisError::from((
+            }),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return Err(RedisError::from((
                     crate::ErrorKind::FatalSendError,
                     "Failed to send the request to the server",
                     err.to_string(),
-                ))
-            })?;
+                )));
+            }
+            Err(_elapsed) => {
+                return Err(RedisError::from((
+                    crate::ErrorKind::FatalSendError,
+                    "Pipeline channel full — connection likely dead",
+                )));
+            }
+        }
         match Runtime::locate().timeout(timeout, receiver).await {
             Ok(Ok(result)) => result,
             Ok(Err(err)) => {
