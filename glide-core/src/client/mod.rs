@@ -993,6 +993,7 @@ impl Client {
                 }
             }
 
+            let inflight_tracker = tracker.clone();
             cmd.set_inflight_tracker(tracker);
 
             // Clone compression_manager reference only if compression is enabled
@@ -1018,10 +1019,9 @@ impl Client {
                     tokio::select! {
                         result = &mut execute => result,
                         _ = tokio::time::sleep(duration) => {
-                            // User timeout — execute future is dropped. The Cmd
-                            // was already moved into the event loop's PendingRequest,
-                            // so its tracker clone keeps the inflight slot held until
-                            // all sub-commands complete naturally.
+                            // User timeout — release the inflight slot immediately
+                            // so healthy shards aren't blocked by dead-node requests.
+                            inflight_tracker.release();
                             if let Err(e) = GlideOpenTelemetry::record_timeout_error() {
                                 log_error(
                                     "OpenTelemetry:timeout_error",
@@ -2884,5 +2884,62 @@ mod tests {
                 "{cmd_name} should be detected as blocking"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_inflight_slot_released_on_timeout() {
+        // When tokio::select! fires the user-facing timeout, the execute future
+        // is dropped. The inflight slot should be released at that point, even
+        // if the cluster event loop still holds a Cmd clone with a tracker.
+        use redis::cluster_async::InflightRequestTracker;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicIsize, Ordering};
+
+        let counter = Arc::new(AtomicIsize::new(1));
+
+        let tracker = InflightRequestTracker::try_new(counter.clone()).unwrap();
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "slot should be reserved");
+
+        // Clone simulates the event loop holding a copy via Cmd
+        let _event_loop_clone = tracker.clone();
+
+        // Simulate tokio::select! timeout calling release()
+        tracker.release();
+
+        // Slot should be released immediately
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "slot should be released on user timeout, even if event loop clone exists"
+        );
+
+        // Dropping the event loop clone should not double-release
+        drop(_event_loop_clone);
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "slot should not be double-released"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inflight_exhaustion_blocks_healthy_shards() {
+        // Dead node requests consume all inflight slots, blocking healthy nodes.
+        use redis::cluster_async::InflightRequestTracker;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicIsize, Ordering};
+
+        let counter = Arc::new(AtomicIsize::new(3));
+
+        let _dead1 = InflightRequestTracker::try_new(counter.clone()).unwrap();
+        let _dead2 = InflightRequestTracker::try_new(counter.clone()).unwrap();
+        let _dead3 = InflightRequestTracker::try_new(counter.clone()).unwrap();
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // Healthy node request rejected
+        assert!(
+            InflightRequestTracker::try_new(counter.clone()).is_none(),
+            "healthy shard blocked by dead node slots"
+        );
     }
 }

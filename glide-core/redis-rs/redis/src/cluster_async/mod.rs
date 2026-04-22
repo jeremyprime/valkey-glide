@@ -62,7 +62,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::{
-        atomic::{self, AtomicIsize, AtomicUsize, Ordering},
+        atomic::{self, AtomicBool, AtomicIsize, AtomicUsize, Ordering},
         Arc,
     },
     task::{self, Poll},
@@ -920,22 +920,33 @@ pin_project! {
 /// the pipeline: Cmd → Message → PendingRequest → in_flight_requests.
 ///
 /// For fan-out commands, `Arc<Cmd>` is cloned per shard — each clone
-/// shares the same tracker. The slot is released only when all
-/// sub-commands finish.
-struct InflightSlotGuard(Arc<AtomicIsize>);
+/// shares the same tracker. The slot is released when `release()` is
+/// called or when the last clone drops, whichever comes first.
+struct InflightSlotGuard {
+    counter: Arc<AtomicIsize>,
+    released: AtomicBool,
+}
 
-impl Drop for InflightSlotGuard {
-    fn drop(&mut self) {
-        self.0.fetch_add(1, Ordering::SeqCst);
+impl InflightSlotGuard {
+    fn release(&self) {
+        if !self.released.swap(true, Ordering::SeqCst) {
+            self.counter.fetch_add(1, Ordering::SeqCst);
+        }
     }
 }
 
-/// Cloneable handle to an inflight slot. Clone = Arc refcount bump.
-/// Last drop triggers `InflightSlotGuard::Drop` which releases the slot.
+impl Drop for InflightSlotGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// Cloneable handle to an inflight slot. Calling `release()` immediately
+/// frees the slot. Clones share the same guard — the slot is released
+/// at most once (on first `release()` or last `Drop`).
 #[derive(Clone)]
 pub struct InflightRequestTracker {
-    /// Held solely for its `Drop` impl which releases the inflight slot.
-    _guard: Arc<InflightSlotGuard>,
+    guard: Arc<InflightSlotGuard>,
 }
 
 impl InflightRequestTracker {
@@ -952,10 +963,19 @@ impl InflightRequestTracker {
                 .is_ok()
             {
                 return Some(Self {
-                    _guard: Arc::new(InflightSlotGuard(counter)),
+                    guard: Arc::new(InflightSlotGuard {
+                        counter,
+                        released: AtomicBool::new(false),
+                    }),
                 });
             }
         }
+    }
+
+    /// Release the inflight slot immediately. Safe to call multiple times
+    /// or alongside Drop — the slot is released exactly once.
+    pub fn release(&self) {
+        self.guard.release();
     }
 }
 
