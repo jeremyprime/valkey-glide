@@ -1,0 +1,34 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.google.osdetector' version '1.7.3'
+    id 'com.gradleup.shadow' version '9.1.0'
+}
+
+group = 'com.company.glide'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+dependencies {
+    def glideVersion = System.getenv("GLIDE_VERSION") ?: "255.255.255"
+    implementation "io.valkey:valkey-glide:${glideVersion}:${osdetector.classifier}"
+    implementation "io.lettuce:lettuce-core:6.5.5.RELEASE"
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(11)
+    }
+}
+
+application {
+    mainClass = System.getProperty('mainClass') ?: 'com.company.glide.resilience.NetworkPartitionTest'
+}
+
+shadowJar {
+    archiveClassifier.set('')
+}

@@ -1,0 +1,137 @@
+name: resilience-test
+
+services:
+  # Single-node cluster for memory pressure test
+  valkey-single:
+    image: valkey/valkey:8
+    container_name: resilience-valkey-single
+    command:
+      - sh
+      - -c
+      - |
+        valkey-server --cluster-enabled yes --cluster-node-timeout 300000 \
+          --appendonly no --port 6379 --daemonize yes
+        sleep 1
+        valkey-cli cluster addslots $$(seq 0 16383) >/dev/null
+        tail -f /dev/null
+    networks:
+      resilience-net:
+        ipv4_address: 172.30.0.10
+    profiles: ["memory"]
+
+  # 3-node cluster for network partition test
+  valkey-1:
+    image: valkey/valkey:8
+    container_name: resilience-valkey-1
+    command: >
+      valkey-server --port 6379 --cluster-enabled yes
+      --cluster-config-file nodes.conf --cluster-node-timeout 300000
+      --appendonly no --protected-mode no --bind 0.0.0.0
+      --cluster-announce-ip 172.30.0.11
+    networks:
+      resilience-net:
+        ipv4_address: 172.30.0.11
+    profiles: ["network", "memory", "cb-bench"]
+
+  valkey-2:
+    image: valkey/valkey:8
+    container_name: resilience-valkey-2
+    command: >
+      valkey-server --port 6379 --cluster-enabled yes
+      --cluster-config-file nodes.conf --cluster-node-timeout 300000
+      --appendonly no --protected-mode no --bind 0.0.0.0
+      --cluster-announce-ip 172.30.0.12
+    networks:
+      resilience-net:
+        ipv4_address: 172.30.0.12
+    profiles: ["network", "memory", "cb-bench"]
+
+  valkey-3:
+    image: valkey/valkey:8
+    container_name: resilience-valkey-3
+    command: >
+      valkey-server --port 6379 --cluster-enabled yes
+      --cluster-config-file nodes.conf --cluster-node-timeout 300000
+      --appendonly no --protected-mode no --bind 0.0.0.0
+      --cluster-announce-ip 172.30.0.13
+    networks:
+      resilience-net:
+        ipv4_address: 172.30.0.13
+    profiles: ["network", "memory", "cb-bench"]
+
+  cluster-init:
+    image: valkey/valkey:8
+    container_name: resilience-cluster-init
+    depends_on: [valkey-1, valkey-2, valkey-3]
+    entrypoint: []
+    command:
+      - bash
+      - -c
+      - |
+        sleep 3
+        echo 'Creating cluster...'
+        valkey-cli --cluster create 172.30.0.11:6379 172.30.0.12:6379 172.30.0.13:6379 --cluster-replicas 0 --cluster-yes
+        echo 'Cluster created.'
+    networks:
+      - resilience-net
+    profiles: ["network", "memory", "cb-bench"]
+
+  # Network partition test — uses docker pause to simulate half-open TCP
+  network-test:
+    build: .
+    container_name: resilience-network-test
+    depends_on:
+      cluster-init:
+        condition: service_completed_successfully
+    environment:
+      MAIN_CLASS: com.company.glide.resilience.NetworkPartitionTest
+      VALKEY_HOST: "172.30.0.11"
+      VALKEY_PORT: "6379"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - resilience-net
+    profiles: ["network", "memory", "cb-bench"]
+
+  # Memory pressure test — cgroup memory limit squeezes Rust allocator
+  memory-test:
+    build: .
+    container_name: resilience-memory-test
+    depends_on: [cluster-init]
+    environment:
+      MAIN_CLASS: com.company.glide.resilience.MemoryPressureTest
+      VALKEY_HOST: "172.30.0.11"
+      VALKEY_PORT: "6379"
+      TEST_DURATION: "${TEST_DURATION:-600}"
+      JAVA_OPTS: "-Xmx1g -Xms1g -XX:MaxDirectMemorySize=96m -Dio.netty.maxDirectMemory=0 -XX:+UseG1GC -XX:+UseStringDeduplication"
+    networks:
+      - resilience-net
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1400m
+    profiles: ["memory"]
+
+  cb-bench:
+    build: .
+    container_name: resilience-cb-bench-test
+    depends_on:
+      cluster-init:
+        condition: service_completed_successfully
+    environment:
+      MAIN_CLASS: com.company.glide.resilience.CircuitBreakerBenchmark
+      VALKEY_HOST: "172.30.0.11"
+      VALKEY_PORT: "6379"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - resilience-net
+    profiles: ["cb-bench"]
+
+networks:
+  resilience-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
