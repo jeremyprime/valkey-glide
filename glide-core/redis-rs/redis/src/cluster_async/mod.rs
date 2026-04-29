@@ -144,7 +144,10 @@ fn set_routed_node_on_span(span: &GlideSpan, address: &str) {
 /// underlying connections maintained for each node in the cluster, as well
 /// as common parameters for connecting to nodes and executing commands.
 #[derive(Clone)]
-pub struct ClusterConnection<C = MultiplexedConnection>(mpsc::Sender<Message<C>>);
+pub struct ClusterConnection<C = MultiplexedConnection> {
+    cluster_task: mpsc::Sender<Message<C>>,
+    inner: Core<C>,
+}
 
 impl<C> ClusterConnection<C>
 where
@@ -165,17 +168,21 @@ where
             iam_token_provider,
         )
         .await
-        .map(|inner| {
+        .map(|cluster_inner| {
+            let core = cluster_inner.inner.clone();
             let (tx, mut rx) = mpsc::channel::<Message<_>>(100);
             let stream = async move {
                 let _ = stream::poll_fn(move |cx| rx.poll_recv(cx))
                     .map(Ok)
-                    .forward(inner)
+                    .forward(cluster_inner)
                     .await;
             };
             #[cfg(feature = "tokio-comp")]
             tokio::spawn(stream);
-            ClusterConnection(tx)
+            ClusterConnection {
+                cluster_task: tx,
+                inner: core,
+            }
         })
     }
 
@@ -243,7 +250,7 @@ where
         cluster_scan_args: ClusterScanArgs,
     ) -> RedisResult<(ScanStateRC, Vec<Value>)> {
         let (sender, receiver) = oneshot::channel();
-        self.0
+        self.cluster_task
             .send(Message {
                 cmd: CmdArg::ClusterScan { cluster_scan_args },
                 sender,
@@ -269,6 +276,44 @@ where
             })
     }
 
+    /// Fast path: send directly to the per-node connection, bypassing the cluster task.
+    /// Handles MOVED/ASK redirects inline using existing connections.
+    /// Returns `None` only when the route can't be resolved (falls back to cluster task).
+    /// Dead connections are bounded by the pipeline send timeout (#5755).
+    async fn try_direct_dispatch(
+        &self,
+        cmd: &Cmd,
+        routing: &SingleNodeRoutingInfo,
+    ) -> Option<RedisResult<Value>> {
+        let route = match routing {
+            SingleNodeRoutingInfo::SpecificNode(route) => route,
+            _ => return None,
+        };
+
+        let conn_future = {
+            let container = self.inner.conn_lock.read();
+            container.connection_for_route(route)?.1
+        };
+
+        let mut conn = conn_future.await;
+        let result = conn.req_packed_command(cmd).await;
+
+        match &result {
+            Ok(_) => Some(result),
+            Err(e) if e.kind() == ErrorKind::Ask || e.kind() == ErrorKind::Moved => {
+                log_debug_lazy!(
+                    "cluster",
+                    format!(
+                        "direct dispatch received {:?}, falling back to cluster task",
+                        e.kind()
+                    )
+                );
+                None
+            }
+            Err(_) => Some(result),
+        }
+    }
+
     /// Send a command to the given `routing`. If `routing` is [None], it will be computed from `cmd`.
     pub async fn route_command(
         &mut self,
@@ -277,7 +322,7 @@ where
     ) -> RedisResult<Value> {
         log_trace_lazy!("cluster", "route_command");
         let (sender, receiver) = oneshot::channel();
-        self.0
+        self.cluster_task
             .send(Message {
                 cmd: CmdArg::Cmd {
                     cmd: Arc::new(cmd.clone()),
@@ -322,7 +367,7 @@ where
         pipeline_retry_strategy: Option<PipelineRetryStrategy>,
     ) -> RedisResult<Vec<Value>> {
         let (sender, receiver) = oneshot::channel();
-        self.0
+        self.cluster_task
             .send(Message {
                 cmd: CmdArg::Pipeline {
                     pipeline: Arc::new(pipeline.clone()),
@@ -421,7 +466,7 @@ where
         operation_request: Operation,
     ) -> RedisResult<Value> {
         let (sender, receiver) = oneshot::channel();
-        self.0
+        self.cluster_task
             .send(Message {
                 cmd: CmdArg::OperationRequest(operation_request),
                 sender,
@@ -4279,6 +4324,20 @@ where
         let routing = cluster_routing::RoutingInfo::for_routable(cmd).unwrap_or(
             cluster_routing::RoutingInfo::SingleNode(SingleNodeRoutingInfo::Random),
         );
+
+        // Fast path: single-node commands bypass the cluster task.
+        if let cluster_routing::RoutingInfo::SingleNode(ref single) = routing {
+            let single = single.clone();
+            return async move {
+                if let Some(result) = self.try_direct_dispatch(cmd, &single).await {
+                    return result;
+                }
+                // Slow path: fall back to cluster task for retries, redirects, etc.
+                self.route_command(cmd, routing).await
+            }
+            .boxed();
+        }
+
         self.route_command(cmd, routing).boxed()
     }
 
