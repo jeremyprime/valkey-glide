@@ -51,6 +51,8 @@ struct BuilderParams {
     tcp_nodelay: bool,
     cache: Option<Arc<dyn GlideCache>>,
     address_resolver: Option<Arc<dyn AddressResolver>>,
+    #[cfg(feature = "cluster-async")]
+    circuit_breaker: Option<crate::cluster_async::circuit_breaker::CircuitBreakerConfig>,
 }
 
 #[derive(Clone)]
@@ -157,6 +159,9 @@ pub struct ClusterParams {
     pub(crate) cache: Option<Arc<dyn GlideCache>>,
     /// Optional callback for resolving addresses before connection.
     pub(crate) address_resolver: Option<Arc<dyn AddressResolver>>,
+    /// Circuit breaker configuration. None disables the circuit breaker.
+    #[cfg(feature = "cluster-async")]
+    pub(crate) circuit_breaker: Option<crate::cluster_async::circuit_breaker::CircuitBreakerConfig>,
 }
 
 impl ClusterParams {
@@ -191,6 +196,8 @@ impl ClusterParams {
             tcp_nodelay: value.tcp_nodelay,
             cache: value.cache,
             address_resolver: value.address_resolver,
+            #[cfg(feature = "cluster-async")]
+            circuit_breaker: value.circuit_breaker,
         })
     }
 }
@@ -223,6 +230,10 @@ impl ClusterParams {
             tcp_nodelay: false,
             cache: None,
             address_resolver: None,
+            #[cfg(feature = "cluster-async")]
+            circuit_breaker: Some(
+                crate::cluster_async::circuit_breaker::CircuitBreakerConfig::default(),
+            ),
         }
     }
 }
@@ -245,7 +256,13 @@ impl ClusterClientBuilder {
                 .into_iter()
                 .map(|x| x.into_connection_info())
                 .collect(),
-            builder_params: Default::default(),
+            builder_params: BuilderParams {
+                #[cfg(feature = "cluster-async")]
+                circuit_breaker: Some(
+                    crate::cluster_async::circuit_breaker::CircuitBreakerConfig::default(),
+                ),
+                ..Default::default()
+            },
         }
     }
 
@@ -575,6 +592,16 @@ impl ClusterClientBuilder {
     /// Sets the protocol with which the client should communicate with the server.
     pub fn use_protocol(mut self, protocol: ProtocolVersion) -> ClusterClientBuilder {
         self.builder_params.protocol = protocol;
+        self
+    }
+
+    /// Sets the circuit breaker configuration. Pass `None` to disable.
+    #[cfg(feature = "cluster-async")]
+    pub fn circuit_breaker(
+        mut self,
+        config: Option<crate::cluster_async::circuit_breaker::CircuitBreakerConfig>,
+    ) -> ClusterClientBuilder {
+        self.builder_params.circuit_breaker = config;
         self
     }
 

@@ -22,6 +22,8 @@
 //! }
 //! ```
 
+/// Per-node circuit breaker for cluster connections.
+pub mod circuit_breaker;
 mod connections_container;
 mod connections_logic;
 mod pipeline_routing;
@@ -495,6 +497,8 @@ pub(crate) struct InnerCore<C> {
     /// This prevents validation from removing connections that were just created
     /// during topology discovery but haven't been assigned slots yet.
     pub(crate) topology_refresh_lock: tokio::sync::Mutex<()>,
+    /// Per-node circuit breakers. Key is the node address string.
+    pub(crate) circuit_breakers: DashMap<String, Arc<circuit_breaker::CircuitBreaker>>,
 }
 
 pub(crate) type Core<C> = Arc<InnerCore<C>>;
@@ -1079,6 +1083,7 @@ mod iam_token_refresh_tests {
             initial_nodes: Vec::new(),
             glide_connection_options: options_with_provider(provider),
             topology_refresh_lock: tokio::sync::Mutex::new(()),
+            circuit_breakers: DashMap::new(),
         })
     }
 
@@ -1492,6 +1497,7 @@ where
             initial_nodes: initial_nodes.to_vec(),
             glide_connection_options,
             topology_refresh_lock: tokio::sync::Mutex::new(()),
+            circuit_breakers: DashMap::new(),
         });
         let mut connection = ClusterConnInner {
             inner,
@@ -1677,8 +1683,28 @@ where
         Box::pin(async move {
             Self::refresh_iam_token_in_cluster_params(&inner).await;
             let cluster_params = inner.get_cluster_param(|params| params.clone());
+            // Skip nodes whose circuit breaker is Open to reduce wasted reconnection attempts.
+            // Nodes with no breaker or with elapsed open_timeout are allowed through.
+            let initial_nodes: Vec<_> = inner
+                .initial_nodes
+                .iter()
+                .filter(|node| {
+                    let addr = node.addr.to_string();
+                    inner
+                        .circuit_breakers
+                        .get(&addr)
+                        .map_or(true, |cb| cb.state() != circuit_breaker::CircuitState::Open)
+                })
+                .cloned()
+                .collect();
+            let initial_nodes = if initial_nodes.is_empty() {
+                // All breakers Open — try all nodes anyway to allow recovery
+                inner.initial_nodes.clone()
+            } else {
+                initial_nodes
+            };
             let connection_map = match Self::create_initial_connections(
-                &inner.initial_nodes,
+                &initial_nodes,
                 &cluster_params,
                 inner.glide_connection_options.clone(),
             )
@@ -2972,35 +2998,133 @@ where
         };
         log_trace_lazy!("cluster", "route request to single node");
 
-        let (address, mut conn) = Self::get_connection(routing, core, Some(cmd.clone()))
+        let (address, mut conn) = Self::get_connection(routing, core.clone(), Some(cmd.clone()))
             .await
             .map_err(|err| (OperationTarget::NotFound, err))?;
-        if let Some(span) = cmd.span() {
-            set_routed_node_on_span(&span, &address);
-        }
 
-        conn.req_packed_command(&cmd)
-            .await
-            .map(Response::Single)
-            .map_err(|err| (address.into(), err))
+        let cb_config = core.get_cluster_param(|p| p.circuit_breaker.clone());
+
+        if let Some(ref config) = cb_config {
+            let breaker = core
+                .circuit_breakers
+                .entry(address.clone())
+                .or_insert_with(|| {
+                    Arc::new(circuit_breaker::CircuitBreaker::new(
+                        config.clone(),
+                        address.clone(),
+                    ))
+                })
+                .clone();
+
+            let is_probe = breaker.on_entry().map_err(|err| {
+                (
+                    OperationTarget::Node {
+                        address: address.clone(),
+                    },
+                    err,
+                )
+            })?;
+
+            if let Some(span) = cmd.span() {
+                set_routed_node_on_span(&span, &address);
+            }
+
+            let result = conn.req_packed_command(&cmd).await;
+
+            let just_tripped = breaker.on_result(is_probe, result.as_ref().err());
+            if just_tripped {
+                core.conn_lock.read().remove_node(&address);
+                log_warn_lazy!(
+                    "circuit_breaker",
+                    format!(
+                        "Dropped connection to {} to release in-flight commands",
+                        address
+                    )
+                );
+            }
+
+            result
+                .map(Response::Single)
+                .map_err(|err| (address.into(), err))
+        } else {
+            if let Some(span) = cmd.span() {
+                set_routed_node_on_span(&span, &address);
+            }
+            conn.req_packed_command(&cmd)
+                .await
+                .map(Response::Single)
+                .map_err(|err| (address.into(), err))
+        }
     }
 
+    // Note: Pipeline timeout uses tokio::time (via run_with_timeout), not a dedicated
+    // OS thread. Under Tokio starvation, this timeout may not fire. The circuit breaker's
+    // on_entry() check provides fast-path rejection if the node is already Open.
     async fn try_pipeline_request(
         pipeline: Arc<crate::Pipeline>,
         offset: usize,
         count: usize,
+        core: Core<C>,
         conn: impl Future<Output = RedisResult<(String, C)>>,
     ) -> OperationResult {
         log_trace_lazy!("cluster", "try_pipeline_request");
         let (address, mut conn) = conn.await.map_err(|err| (OperationTarget::NotFound, err))?;
-        if let Some(span) = pipeline.span() {
-            set_routed_node_on_span(&span, &address);
-        }
 
-        conn.req_packed_commands(&pipeline, offset, count, None)
-            .await
-            .map(Response::Multiple)
-            .map_err(|err| (OperationTarget::Node { address }, err))
+        let cb_config = core.get_cluster_param(|p| p.circuit_breaker.clone());
+
+        if let Some(ref config) = cb_config {
+            let breaker = core
+                .circuit_breakers
+                .entry(address.clone())
+                .or_insert_with(|| {
+                    Arc::new(circuit_breaker::CircuitBreaker::new(
+                        config.clone(),
+                        address.clone(),
+                    ))
+                })
+                .clone();
+
+            let is_probe = breaker.on_entry().map_err(|err| {
+                (
+                    OperationTarget::Node {
+                        address: address.clone(),
+                    },
+                    err,
+                )
+            })?;
+
+            if let Some(span) = pipeline.span() {
+                set_routed_node_on_span(&span, &address);
+            }
+
+            let result = conn
+                .req_packed_commands(&pipeline, offset, count, None)
+                .await;
+
+            let just_tripped = breaker.on_result(is_probe, result.as_ref().err());
+            if just_tripped {
+                core.conn_lock.read().remove_node(&address);
+                log_warn_lazy!(
+                    "circuit_breaker",
+                    format!(
+                        "Dropped connection to {} to release in-flight commands",
+                        address
+                    )
+                );
+            }
+
+            result
+                .map(Response::Multiple)
+                .map_err(|err| (OperationTarget::Node { address }, err))
+        } else {
+            if let Some(span) = pipeline.span() {
+                set_routed_node_on_span(&span, &address);
+            }
+            conn.req_packed_commands(&pipeline, offset, count, None)
+                .await
+                .map(Response::Multiple)
+                .map_err(|err| (OperationTarget::Node { address }, err))
+        }
     }
 
     async fn try_request(info: RequestInfo<C>, core: Core<C>) -> OperationResult {
@@ -3019,6 +3143,7 @@ where
                         pipeline,
                         offset,
                         count,
+                        core.clone(),
                         Self::get_connection(
                             route.unwrap_or(InternalSingleNodeRouting::Random),
                             core,

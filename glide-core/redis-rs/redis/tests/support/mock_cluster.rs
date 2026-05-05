@@ -449,7 +449,7 @@ impl MockEnv {
         handler: impl Fn(&[u8], u16) -> Result<(), RedisResult<Value>> + Send + Sync + 'static,
     ) -> Self {
         Self::with_client_builder(
-            ClusterClient::builder(vec![&*format!("redis://{id}")]),
+            ClusterClient::builder(vec![&*format!("redis://{id}")]).circuit_breaker(None),
             id,
             handler,
         )
