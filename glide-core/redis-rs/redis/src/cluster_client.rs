@@ -50,9 +50,9 @@ struct BuilderParams {
     database_id: i64,
     tcp_nodelay: bool,
     cache: Option<Arc<dyn GlideCache>>,
-    address_resolver: Option<Arc<dyn AddressResolver>>,
     #[cfg(feature = "cluster-async")]
     circuit_breaker: Option<crate::cluster_async::circuit_breaker::CircuitBreakerConfig>,
+    address_resolver: Option<Arc<dyn AddressResolver>>,
 }
 
 #[derive(Clone)]
@@ -157,11 +157,11 @@ pub struct ClusterParams {
     pub(crate) database_id: i64,
     pub(crate) tcp_nodelay: bool,
     pub(crate) cache: Option<Arc<dyn GlideCache>>,
-    /// Optional callback for resolving addresses before connection.
-    pub(crate) address_resolver: Option<Arc<dyn AddressResolver>>,
     /// Circuit breaker configuration. None disables the circuit breaker.
     #[cfg(feature = "cluster-async")]
     pub(crate) circuit_breaker: Option<crate::cluster_async::circuit_breaker::CircuitBreakerConfig>,
+    /// Optional callback for resolving addresses before connection.
+    pub(crate) address_resolver: Option<Arc<dyn AddressResolver>>,
 }
 
 impl ClusterParams {
@@ -195,9 +195,9 @@ impl ClusterParams {
             database_id: value.database_id,
             tcp_nodelay: value.tcp_nodelay,
             cache: value.cache,
-            address_resolver: value.address_resolver,
             #[cfg(feature = "cluster-async")]
             circuit_breaker: value.circuit_breaker,
+            address_resolver: value.address_resolver,
         })
     }
 }
@@ -229,11 +229,9 @@ impl ClusterParams {
             database_id: 0,
             tcp_nodelay: false,
             cache: None,
-            address_resolver: None,
             #[cfg(feature = "cluster-async")]
-            circuit_breaker: Some(
-                crate::cluster_async::circuit_breaker::CircuitBreakerConfig::default(),
-            ),
+            circuit_breaker: None,
+            address_resolver: None,
         }
     }
 }
@@ -258,9 +256,7 @@ impl ClusterClientBuilder {
                 .collect(),
             builder_params: BuilderParams {
                 #[cfg(feature = "cluster-async")]
-                circuit_breaker: Some(
-                    crate::cluster_async::circuit_breaker::CircuitBreakerConfig::default(),
-                ),
+                circuit_breaker: None,
                 ..Default::default()
             },
         }

@@ -47,6 +47,7 @@ pub struct ConnectionRequest {
     pub read_only: bool,
     pub client_side_cache: Option<ClientSideCache>,
     pub node_discovery_mode: NodeDiscoveryMode,
+    pub circuit_breaker: Option<redis::cluster_async::circuit_breaker::CircuitBreakerConfig>,
     pub address_resolver: Option<Arc<dyn AddressResolver>>,
 }
 
@@ -444,6 +445,14 @@ impl From<protobuf::ConnectionRequest> for ConnectionRequest {
             pubsub_reconciliation_interval_ms,
             read_only,
             node_discovery_mode,
+            circuit_breaker: value.circuit_breaker.into_option().map(|cb| {
+                redis::cluster_async::circuit_breaker::CircuitBreakerConfig {
+                    window_size: std::time::Duration::from_millis(cb.window_size_ms as u64),
+                    error_threshold: cb.error_threshold,
+                    open_timeout: std::time::Duration::from_millis(cb.open_timeout_ms as u64),
+                    count_timeouts: cb.count_timeouts,
+                }
+            }),
             // Address resolver is not set from protobuf - it's set programmatically
             address_resolver: None,
         }

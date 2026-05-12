@@ -552,6 +552,33 @@ class TlsAdvancedConfiguration:
         self.client_key_pem = client_key_pem
 
 
+class CircuitBreakerConfiguration:
+    """
+    Configuration for the per-node circuit breaker in cluster mode.
+
+    The circuit breaker detects unresponsive nodes and stops routing commands to them,
+    preserving throughput to healthy nodes.
+
+    Args:
+        window_size (int): Sliding window duration in milliseconds for error counting. Default: 10000 (10s).
+        error_threshold (int): Number of connection-level errors within the window to trip the breaker. Default: 10.
+        open_timeout (int): Time in milliseconds in Open state before allowing a probe request. Default: 5000 (5s).
+        count_timeouts (bool): When true, command timeouts count toward tripping. Default: false.
+    """
+
+    def __init__(
+        self,
+        window_size: int = 10000,
+        error_threshold: int = 10,
+        open_timeout: int = 5000,
+        count_timeouts: bool = False,
+    ):
+        self.window_size = window_size
+        self.error_threshold = error_threshold
+        self.open_timeout = open_timeout
+        self.count_timeouts = count_timeouts
+
+
 class AdvancedBaseClientConfiguration:
     """
     Represents the advanced configuration settings for a base Glide client.
@@ -1203,11 +1230,17 @@ class AdvancedGlideClusterClientConfiguration(AdvancedBaseClientConfiguration):
         refresh_topology_from_initial_nodes: bool = False,
         tcp_nodelay: Optional[bool] = None,
         pubsub_reconciliation_interval: Optional[int] = None,
+        circuit_breaker: Optional["CircuitBreakerConfiguration"] = None,
     ):
         super().__init__(
             connection_timeout, tls_config, tcp_nodelay, pubsub_reconciliation_interval
         )
         self.refresh_topology_from_initial_nodes = refresh_topology_from_initial_nodes
+        self.circuit_breaker = (
+            circuit_breaker
+            if circuit_breaker is not None
+            else CircuitBreakerConfiguration()
+        )
 
     def _create_a_protobuf_conn_request(
         self, request: ConnectionRequest
@@ -1217,6 +1250,13 @@ class AdvancedGlideClusterClientConfiguration(AdvancedBaseClientConfiguration):
         request.refresh_topology_from_initial_nodes = (
             self.refresh_topology_from_initial_nodes
         )
+        if self.circuit_breaker is not None:
+            request.circuit_breaker.window_size_ms = self.circuit_breaker.window_size
+            request.circuit_breaker.error_threshold = (
+                self.circuit_breaker.error_threshold
+            )
+            request.circuit_breaker.open_timeout_ms = self.circuit_breaker.open_timeout
+            request.circuit_breaker.count_timeouts = self.circuit_breaker.count_timeouts
         return request
 
 

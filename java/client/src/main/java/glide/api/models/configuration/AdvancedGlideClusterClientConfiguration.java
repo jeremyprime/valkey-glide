@@ -50,4 +50,16 @@ public class AdvancedGlideClusterClientConfiguration extends AdvancedBaseClientC
      */
     @Builder.Default
     private final PeriodicChecksConfig periodicChecks = PeriodicChecksStatus.ENABLED_DEFAULT_CONFIGS;
+
+    /**
+     * Configuration for the per-node circuit breaker. When set, enables the circuit breaker which
+     * detects unresponsive nodes and stops routing commands to them.
+     *
+     * <p>If set to null, the circuit breaker is disabled.
+     *
+     * <p>Defaults to enabled with standard settings (10 errors / 10s window / 5s open timeout).
+     */
+    @Builder.Default
+    private final CircuitBreakerConfiguration circuitBreakerConfiguration =
+            CircuitBreakerConfiguration.builder().build();
 }

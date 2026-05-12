@@ -1693,7 +1693,7 @@ where
                     inner
                         .circuit_breakers
                         .get(&addr)
-                        .map_or(true, |cb| cb.state() != circuit_breaker::CircuitState::Open)
+                        .map_or(true, |cb| !cb.is_open())
                 })
                 .cloned()
                 .collect();

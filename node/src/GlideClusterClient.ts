@@ -296,7 +296,34 @@ export type AdvancedGlideClusterClientConfiguration =
          * If not set, defaults to `false` (uses internal cluster view for topology refresh).
          */
         refreshTopologyFromInitialNodes?: boolean;
+
+        /**
+         * Configuration for the per-node circuit breaker. When set, enables the circuit breaker
+         * which detects unresponsive nodes and stops routing commands to them.
+         *
+         * If not set or set to null/undefined, the circuit breaker is disabled.
+         *
+         * Defaults to enabled with standard settings when using the default configuration helper.
+         */
+        circuitBreakerConfiguration?: CircuitBreakerConfiguration | null;
     };
+
+/**
+ * Configuration for the per-node circuit breaker in cluster mode.
+ *
+ * The circuit breaker detects unresponsive nodes and stops routing commands to them,
+ * preserving throughput to healthy nodes.
+ */
+export interface CircuitBreakerConfiguration {
+    /** Sliding window duration in milliseconds for error counting. Default: 10000 (10s). */
+    windowSize?: number;
+    /** Number of connection-level errors within the window to trip the breaker. Default: 10. */
+    errorThreshold?: number;
+    /** Time in milliseconds in Open state before allowing a probe request. Default: 5000 (5s). */
+    openTimeout?: number;
+    /** When true, command timeouts count toward tripping. Default: false. */
+    countTimeouts?: boolean;
+}
 
 /**
  * If the command's routing is to one node we will get T as a response type,
@@ -626,6 +653,22 @@ export class GlideClusterClient extends BaseClient {
                 configuration.refreshTopologyFromInitialNodes =
                     options.advancedConfiguration.refreshTopologyFromInitialNodes;
             }
+        }
+
+        // Set circuit breaker configuration (enabled by default with standard settings)
+        // Pass circuitBreakerConfiguration: null to explicitly disable
+        const cbConfig =
+            options.advancedConfiguration?.circuitBreakerConfiguration;
+
+        if (cbConfig !== null) {
+            const cb = cbConfig ?? {};
+            configuration.circuitBreaker =
+                connection_request.CircuitBreakerConfig.create({
+                    windowSizeMs: cb.windowSize ?? 10000,
+                    errorThreshold: cb.errorThreshold ?? 10,
+                    openTimeoutMs: cb.openTimeout ?? 5000,
+                    countTimeouts: cb.countTimeouts ?? false,
+                });
         }
 
         return configuration;

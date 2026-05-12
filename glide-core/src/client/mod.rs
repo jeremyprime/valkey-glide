@@ -1846,6 +1846,9 @@ async fn create_cluster_client(
     // Always use with Glide
     builder = builder.periodic_connections_checks(Some(CONNECTION_CHECKS_INTERVAL));
 
+    // Circuit breaker configuration from client request
+    builder = builder.circuit_breaker(request.circuit_breaker.clone());
+
     let client = builder.build()?;
     let iam_token_provider: Option<Arc<dyn redis::IAMTokenProvider>> = iam_token_manager
         .map(|manager| Arc::new(manager.get_token_handle()) as Arc<dyn redis::IAMTokenProvider>);

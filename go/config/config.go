@@ -595,7 +595,7 @@ type ClusterClientConfiguration struct {
 func NewClusterClientConfiguration() *ClusterClientConfiguration {
 	return &ClusterClientConfiguration{
 		baseClientConfiguration:            baseClientConfiguration{},
-		AdvancedClusterClientConfiguration: AdvancedClusterClientConfiguration{},
+		AdvancedClusterClientConfiguration: *NewAdvancedClusterClientConfiguration(),
 	}
 }
 
@@ -645,6 +645,17 @@ func (config *ClusterClientConfiguration) ToProtobuf() (*protobuf.ConnectionRequ
 	if config.AdvancedClusterClientConfiguration.pubsubReconciliationIntervalMs != nil {
 		intervalMs := uint32(*config.AdvancedClusterClientConfiguration.pubsubReconciliationIntervalMs)
 		request.PubsubReconciliationIntervalMs = &intervalMs
+	}
+
+	// Handle circuit breaker configuration
+	if config.AdvancedClusterClientConfiguration.circuitBreaker != nil {
+		cb := config.AdvancedClusterClientConfiguration.circuitBreaker
+		request.CircuitBreaker = &protobuf.CircuitBreakerConfig{
+			WindowSizeMs:   uint32(cb.WindowSize.Milliseconds()),
+			ErrorThreshold: cb.ErrorThreshold,
+			OpenTimeoutMs:  uint32(cb.OpenTimeout.Milliseconds()),
+			CountTimeouts:  cb.CountTimeouts,
+		}
 	}
 
 	// Handle TLS configuration
@@ -988,11 +999,14 @@ type AdvancedClusterClientConfiguration struct {
 	tlsConfig                       *TlsConfiguration
 	tcpNoDelay                      *bool
 	pubsubReconciliationIntervalMs  *int
+	circuitBreaker                  *CircuitBreakerConfiguration
 }
 
 // NewAdvancedClusterClientConfiguration returns a new [AdvancedClusterClientConfiguration] with default settings.
 func NewAdvancedClusterClientConfiguration() *AdvancedClusterClientConfiguration {
-	return &AdvancedClusterClientConfiguration{}
+	return &AdvancedClusterClientConfiguration{
+		circuitBreaker: NewDefaultCircuitBreakerConfiguration(),
+	}
 }
 
 // WithConnectionTimeout sets the duration to wait for a TCP/TLS connection to complete.
@@ -1067,4 +1081,37 @@ func (config *AdvancedClusterClientConfiguration) WithPubSubReconciliationInterv
 ) *AdvancedClusterClientConfiguration {
 	config.pubsubReconciliationIntervalMs = &intervalMs
 	return config
+}
+
+// WithCircuitBreaker sets the circuit breaker configuration.
+// The circuit breaker detects unresponsive nodes and stops routing commands to them,
+// preserving throughput to healthy nodes.
+// Pass nil to disable the circuit breaker.
+func (config *AdvancedClusterClientConfiguration) WithCircuitBreaker(
+	circuitBreaker *CircuitBreakerConfiguration,
+) *AdvancedClusterClientConfiguration {
+	config.circuitBreaker = circuitBreaker
+	return config
+}
+
+// CircuitBreakerConfiguration configures the per-node circuit breaker for cluster connections.
+type CircuitBreakerConfiguration struct {
+	// WindowSize is the sliding window duration for error counting. Default: 10s.
+	WindowSize time.Duration
+	// ErrorThreshold is the number of connection-level errors within the window to trip the breaker. Default: 10.
+	ErrorThreshold uint32
+	// OpenTimeout is the time in Open state before allowing a probe. Default: 5s.
+	OpenTimeout time.Duration
+	// CountTimeouts when true, command timeouts count toward tripping. Default: false.
+	CountTimeouts bool
+}
+
+// NewDefaultCircuitBreakerConfiguration returns a CircuitBreakerConfiguration with default settings.
+func NewDefaultCircuitBreakerConfiguration() *CircuitBreakerConfiguration {
+	return &CircuitBreakerConfiguration{
+		WindowSize:     10 * time.Second,
+		ErrorThreshold: 10,
+		OpenTimeout:    5 * time.Second,
+		CountTimeouts:  false,
+	}
 }

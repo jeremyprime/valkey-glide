@@ -10,6 +10,7 @@ import glide.api.models.configuration.AdvancedGlideClusterClientConfiguration;
 import glide.api.models.configuration.BackoffStrategy;
 import glide.api.models.configuration.BaseClientConfiguration;
 import glide.api.models.configuration.BaseSubscriptionConfiguration;
+import glide.api.models.configuration.CircuitBreakerConfiguration;
 import glide.api.models.configuration.ClientSideCache;
 import glide.api.models.configuration.ClusterSubscriptionConfiguration;
 import glide.api.models.configuration.CompressionBackend;
@@ -266,6 +267,20 @@ public class ConnectionManager {
                                             connection_request.ConnectionRequestOuterClass.PeriodicChecksManualInterval
                                                     .newBuilder()
                                                     .setDurationInSec(manualInterval.getDurationInSec())
+                                                    .build());
+                                }
+
+                                // Set circuit breaker configuration
+                                CircuitBreakerConfiguration cbConfig =
+                                        advancedConfig.getCircuitBreakerConfiguration();
+                                if (cbConfig != null) {
+                                    requestBuilder.setCircuitBreaker(
+                                            connection_request.ConnectionRequestOuterClass.CircuitBreakerConfig
+                                                    .newBuilder()
+                                                    .setWindowSizeMs(cbConfig.getWindowSize())
+                                                    .setErrorThreshold(cbConfig.getErrorThreshold())
+                                                    .setOpenTimeoutMs(cbConfig.getOpenTimeout())
+                                                    .setCountTimeouts(cbConfig.isCountTimeouts())
                                                     .build());
                                 }
                             }

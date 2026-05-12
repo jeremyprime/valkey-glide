@@ -383,8 +383,7 @@ impl TestClusterContext {
             .map(RedisServer::connection_info)
             .collect();
         let mut builder = redis::cluster::ClusterClientBuilder::new(initial_nodes.clone())
-            .use_protocol(use_protocol())
-            .circuit_breaker(None);
+            .use_protocol(use_protocol());
 
         if mtls_enabled {
             if let Some(tls_file_paths) = &cluster.tls_paths {

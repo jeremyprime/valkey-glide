@@ -173,11 +173,13 @@ impl CircuitBreaker {
                     if is_transport_error {
                         state.phase = CircuitState::Open;
                         state.opened_at = Some(now);
+                        state.consecutive_trips = state.consecutive_trips.saturating_add(1);
+                        self.trip_count.fetch_add(1, Ordering::Relaxed);
                         log_warn_lazy!(
                             "circuit_breaker",
                             format!(
-                                "Probe failed for node {}. Breaker remains open",
-                                self.address
+                                "Probe failed for node {}. Breaker remains open (trip #{})",
+                                self.address, state.consecutive_trips
                             )
                         );
                     } else {
@@ -216,6 +218,21 @@ impl CircuitBreaker {
     /// Current breaker state.
     pub fn state(&self) -> CircuitState {
         self.state.lock().unwrap().phase
+    }
+
+    /// Returns true if the breaker is currently blocking commands (Open and timeout not elapsed).
+    pub fn is_open(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        match state.phase {
+            CircuitState::Open => {
+                let now = Instant::now();
+                let opened_at = state.opened_at.unwrap_or(now);
+                let backoff_multiplier = 1u32 << state.consecutive_trips.min(4);
+                let effective_timeout = self.config.open_timeout * backoff_multiplier;
+                now.duration_since(opened_at) < effective_timeout
+            }
+            _ => false,
+        }
     }
 
     /// Node address this breaker is for.
@@ -421,8 +438,8 @@ mod tests {
         std::thread::sleep(Duration::from_millis(450));
         assert!(cb.on_entry().unwrap()); // probe allowed
 
-        // Verify consecutive_trips incremented (trip_count = 2)
-        assert_eq!(cb.trip_count(), 1);
+        // trip_count: 1 (initial trip) + 1 (probe failure) = 2
+        assert_eq!(cb.trip_count(), 2);
     }
 
     #[test]
