@@ -41,6 +41,12 @@ func TestDefaultClusterConfig(t *testing.T) {
 		TlsMode:            protobuf.TlsMode_NoTls,
 		ClusterModeEnabled: true,
 		ReadFrom:           protobuf.ReadFrom_Primary,
+		CircuitBreaker: &protobuf.CircuitBreakerConfig{
+			WindowSizeMs:   10000,
+			ErrorThreshold: 10,
+			OpenTimeoutMs:  5000,
+			CountTimeouts:  false,
+		},
 	}
 
 	result, err := config.ToProtobuf()

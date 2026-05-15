@@ -3053,9 +3053,8 @@ where
             fn drop(&mut self) {
                 if !self.completed {
                     // Future was cancelled (timeout) — report as timeout error
-                    let timeout_err = RedisError::from(std::io::Error::from(
-                        std::io::ErrorKind::TimedOut,
-                    ));
+                    let timeout_err =
+                        RedisError::from(std::io::Error::from(std::io::ErrorKind::TimedOut));
                     self.breaker.on_result(self.is_probe, Some(&timeout_err));
                 }
             }
