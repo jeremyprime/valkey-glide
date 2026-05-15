@@ -179,7 +179,8 @@ impl CircuitBreaker {
             CircuitState::HalfOpen => {
                 if is_probe {
                     state.probe_in_flight = false;
-                    if is_transport_error {
+                    if err.is_some() {
+                        // Any error (transport or otherwise) means the node is still unhealthy
                         state.phase = CircuitState::Open;
                         state.opened_at = Some(now);
                         state.consecutive_trips = state.consecutive_trips.saturating_add(1);
@@ -192,6 +193,7 @@ impl CircuitBreaker {
                             )
                         );
                     } else {
+                        // Probe succeeded (no error) — node is healthy again
                         state.phase = CircuitState::Closed;
                         state.opened_at = None;
                         state.consecutive_trips = 0;

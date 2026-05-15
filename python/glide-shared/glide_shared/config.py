@@ -1236,7 +1236,9 @@ class AdvancedGlideClusterClientConfiguration(AdvancedBaseClientConfiguration):
             connection_timeout, tls_config, tcp_nodelay, pubsub_reconciliation_interval
         )
         self.refresh_topology_from_initial_nodes = refresh_topology_from_initial_nodes
-        self.circuit_breaker = (
+        # Default: circuit breaker enabled with standard settings.
+        # Pass a CircuitBreakerConfiguration instance for custom settings.
+        self.circuit_breaker: Optional["CircuitBreakerConfiguration"] = (
             circuit_breaker
             if circuit_breaker is not None
             else CircuitBreakerConfiguration()

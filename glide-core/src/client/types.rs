@@ -446,10 +446,25 @@ impl From<protobuf::ConnectionRequest> for ConnectionRequest {
             read_only,
             node_discovery_mode,
             circuit_breaker: value.circuit_breaker.into_option().map(|cb| {
+                // Use defaults for zero/invalid values to prevent misconfiguration
+                let default =
+                    redis::cluster_async::circuit_breaker::CircuitBreakerConfig::default();
                 redis::cluster_async::circuit_breaker::CircuitBreakerConfig {
-                    window_size: std::time::Duration::from_millis(cb.window_size_ms as u64),
-                    error_threshold: cb.error_threshold,
-                    open_timeout: std::time::Duration::from_millis(cb.open_timeout_ms as u64),
+                    window_size: if cb.window_size_ms > 0 {
+                        std::time::Duration::from_millis(cb.window_size_ms as u64)
+                    } else {
+                        default.window_size
+                    },
+                    error_threshold: if cb.error_threshold > 0 {
+                        cb.error_threshold
+                    } else {
+                        default.error_threshold
+                    },
+                    open_timeout: if cb.open_timeout_ms > 0 {
+                        std::time::Duration::from_millis(cb.open_timeout_ms as u64)
+                    } else {
+                        default.open_timeout
+                    },
                     count_timeouts: cb.count_timeouts,
                 }
             }),
