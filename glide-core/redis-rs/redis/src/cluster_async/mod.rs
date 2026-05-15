@@ -3021,6 +3021,8 @@ where
 
     /// Execute a command with circuit breaker protection.
     /// Handles on_entry check, execution, on_result update, and connection drop on trip.
+    /// If the future is cancelled (e.g., by an outer timeout), the breaker treats it as
+    /// a timeout error via the BreakerGuard drop handler.
     async fn execute_with_breaker<F, Fut>(
         breaker: &circuit_breaker::CircuitBreaker,
         address: &str,
@@ -3040,7 +3042,33 @@ where
             )
         })?;
 
+        // Guard that reports a timeout to the breaker if the future is cancelled
+        // (dropped by an outer tokio::select! timeout) without on_result being called.
+        struct BreakerGuard<'a> {
+            breaker: &'a circuit_breaker::CircuitBreaker,
+            is_probe: bool,
+            completed: bool,
+        }
+        impl<'a> Drop for BreakerGuard<'a> {
+            fn drop(&mut self) {
+                if !self.completed {
+                    // Future was cancelled (timeout) — report as timeout error
+                    let timeout_err = RedisError::from(std::io::Error::from(
+                        std::io::ErrorKind::TimedOut,
+                    ));
+                    self.breaker.on_result(self.is_probe, Some(&timeout_err));
+                }
+            }
+        }
+
+        let mut guard = BreakerGuard {
+            breaker,
+            is_probe,
+            completed: false,
+        };
+
         let result = execute().await;
+        guard.completed = true; // Prevent drop handler from firing
 
         let just_tripped = breaker.on_result(is_probe, result.as_ref().err());
         if just_tripped {
