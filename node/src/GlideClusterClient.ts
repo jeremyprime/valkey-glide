@@ -301,7 +301,7 @@ export type AdvancedGlideClusterClientConfiguration =
          * Configuration for the per-node circuit breaker. When set, enables the circuit breaker
          * which detects unresponsive nodes and stops routing commands to them.
          *
-         * If not set or set to null/undefined, the circuit breaker is disabled.
+         * If not set or set to null, the circuit breaker is disabled.
          *
          * Defaults to enabled with standard settings when using the default configuration helper.
          */

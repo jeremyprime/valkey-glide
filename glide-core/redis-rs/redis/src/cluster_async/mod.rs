@@ -498,6 +498,9 @@ pub(crate) struct InnerCore<C> {
     /// during topology discovery but haven't been assigned slots yet.
     pub(crate) topology_refresh_lock: tokio::sync::Mutex<()>,
     /// Per-node circuit breakers. Key is the node address string.
+    /// TODO: Cache the Arc<CircuitBreaker> per-connection at connection time to avoid
+    /// DashMap lookup + address clone on every command in the hot path.
+    /// Stale entries are cleaned up during topology refresh (see refresh_slots_and_subscriptions_with_retries_inner).
     pub(crate) circuit_breakers: DashMap<String, Arc<circuit_breaker::CircuitBreaker>>,
 }
 
@@ -2487,6 +2490,19 @@ where
             .await;
         }
         in_progress.store(false, Ordering::Relaxed);
+
+        // Clean up circuit breakers for nodes no longer in the topology
+        // to prevent memory leaks during topology changes.
+        let current_addresses: std::collections::HashSet<String> = inner
+            .conn_lock
+            .read()
+            .all_node_connections()
+            .map(|(addr, _)| addr.to_string())
+            .collect();
+        inner
+            .circuit_breakers
+            .retain(|addr, _| current_addresses.contains(addr));
+
         res
     }
 

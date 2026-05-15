@@ -10,7 +10,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use crate::ErrorKind;
@@ -55,7 +55,7 @@ impl Default for CircuitBreakerConfig {
 /// Per-node circuit breaker.
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
-    state: Mutex<BreakerState>,
+    state: RwLock<BreakerState>,
     address: String,
     /// Number of times the breaker has tripped.
     trip_count: AtomicU64,
@@ -76,7 +76,7 @@ impl CircuitBreaker {
     pub fn new(config: CircuitBreakerConfig, address: String) -> Self {
         Self {
             config,
-            state: Mutex::new(BreakerState {
+            state: RwLock::new(BreakerState {
                 phase: CircuitState::Closed,
                 errors: VecDeque::new(),
                 opened_at: None,
@@ -91,7 +91,15 @@ impl CircuitBreaker {
     /// Check if a command should be allowed through.
     /// Returns `Ok(true)` for a probe, `Ok(false)` for normal, `Err` if rejected.
     pub fn on_entry(&self) -> Result<bool, RedisError> {
-        let mut state = self.state.lock().unwrap();
+        // Fast path: read lock for the common Closed state
+        {
+            let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+            if state.phase == CircuitState::Closed {
+                return Ok(false);
+            }
+        }
+        // Slow path: write lock for Open/HalfOpen state transitions
+        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
 
         match state.phase {
@@ -99,8 +107,9 @@ impl CircuitBreaker {
             CircuitState::Open => {
                 let opened_at = state.opened_at.unwrap_or(now);
                 let elapsed = now.duration_since(opened_at);
-                // Exponential backoff: double open_timeout for each consecutive trip (max 16x)
-                let backoff_multiplier = 1u32 << state.consecutive_trips.min(4);
+                // Exponential backoff: open_timeout * 2^(consecutive_trips - 1), max 16x
+                // First trip uses the configured open_timeout (2^0 = 1x)
+                let backoff_multiplier = 1u32 << state.consecutive_trips.saturating_sub(1).min(4);
                 let effective_timeout = self.config.open_timeout * backoff_multiplier;
                 if elapsed >= effective_timeout {
                     state.phase = CircuitState::HalfOpen;
@@ -132,7 +141,7 @@ impl CircuitBreaker {
     /// Report command result. Returns `true` if the breaker just tripped.
     pub fn on_result(&self, is_probe: bool, err: Option<&RedisError>) -> bool {
         let is_transport_error = err.is_some_and(|e| self.is_transport_error(e));
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
 
         match state.phase {
@@ -158,7 +167,7 @@ impl CircuitBreaker {
                             "circuit_breaker",
                             format!(
                                 "Circuit breaker tripped for node {}. Rejecting commands for {:?} (trip #{})",
-                                self.address, self.config.open_timeout * (1u32 << state.consecutive_trips.min(4)),
+                                self.address, self.config.open_timeout * (1u32 << state.consecutive_trips.saturating_sub(1).min(4)),
                                 state.consecutive_trips
                             )
                         );
@@ -217,17 +226,17 @@ impl CircuitBreaker {
 
     /// Current breaker state.
     pub fn state(&self) -> CircuitState {
-        self.state.lock().unwrap().phase
+        self.state.read().unwrap_or_else(|e| e.into_inner()).phase
     }
 
     /// Returns true if the breaker is currently blocking commands (Open and timeout not elapsed).
     pub fn is_open(&self) -> bool {
-        let state = self.state.lock().unwrap();
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
         match state.phase {
             CircuitState::Open => {
                 let now = Instant::now();
                 let opened_at = state.opened_at.unwrap_or(now);
-                let backoff_multiplier = 1u32 << state.consecutive_trips.min(4);
+                let backoff_multiplier = 1u32 << state.consecutive_trips.saturating_sub(1).min(4);
                 let effective_timeout = self.config.open_timeout * backoff_multiplier;
                 now.duration_since(opened_at) < effective_timeout
             }
@@ -420,7 +429,7 @@ mod tests {
         let cb = CircuitBreaker::new(config, "node:6379".into());
         let err = transport_err();
 
-        // Trip 1 → effective timeout = 100ms * 2 = 200ms (consecutive_trips=1)
+        // Trip 1 → effective timeout = 100ms * 1 = 100ms (consecutive_trips=1, shift=0)
         assert!(cb.on_result(false, Some(&err)));
         assert!(cb.on_entry().is_err()); // immediately rejected
 
@@ -428,7 +437,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(250));
         assert!(cb.on_entry().unwrap()); // probe allowed
 
-        // Probe fails → Trip 2 → effective timeout = 100ms * 4 = 400ms (consecutive_trips=2)
+        // Probe fails → Trip 2 → effective timeout = 100ms * 2 = 200ms (consecutive_trips=2, shift=1)
         cb.on_result(true, Some(&err));
 
         // Immediately after re-trip — rejected
