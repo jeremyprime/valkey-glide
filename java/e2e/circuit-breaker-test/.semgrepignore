@@ -1,0 +1,2 @@
+# Requires root for Docker socket access and iptables (NET_ADMIN)
+Dockerfile
