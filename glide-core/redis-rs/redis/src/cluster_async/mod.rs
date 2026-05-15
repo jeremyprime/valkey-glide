@@ -498,9 +498,7 @@ pub(crate) struct InnerCore<C> {
     /// during topology discovery but haven't been assigned slots yet.
     pub(crate) topology_refresh_lock: tokio::sync::Mutex<()>,
     /// Per-node circuit breakers. Key is the node address string.
-    /// TODO: Cache the Arc<CircuitBreaker> per-connection at connection time to avoid
-    /// DashMap lookup + address clone on every command in the hot path.
-    /// Stale entries are cleaned up during topology refresh (see refresh_slots_and_subscriptions_with_retries_inner).
+    /// Stale entries are cleaned up during topology refresh.
     pub(crate) circuit_breakers: DashMap<String, Arc<circuit_breaker::CircuitBreaker>>,
 }
 
@@ -2994,6 +2992,71 @@ where
             .map_err(|err| (OperationTarget::FanOut, err))
     }
 
+    /// Resolve the circuit breaker for a node address.
+    /// Returns None if circuit breaker is not configured.
+    /// Uses get() for the common case (breaker already exists) to avoid
+    /// allocating an owned String key on every command.
+    fn resolve_breaker(
+        core: &Core<C>,
+        address: &str,
+    ) -> Option<Arc<circuit_breaker::CircuitBreaker>> {
+        let config = core.get_cluster_param(|p| p.circuit_breaker.clone())?;
+        // Fast path: breaker already exists (no allocation)
+        if let Some(existing) = core.circuit_breakers.get(address) {
+            return Some(existing.clone());
+        }
+        // Slow path: first request to this node, allocate and insert
+        Some(
+            core.circuit_breakers
+                .entry(address.to_string())
+                .or_insert_with(|| {
+                    Arc::new(circuit_breaker::CircuitBreaker::new(
+                        config,
+                        address.to_string(),
+                    ))
+                })
+                .clone(),
+        )
+    }
+
+    /// Execute a command with circuit breaker protection.
+    /// Handles on_entry check, execution, on_result update, and connection drop on trip.
+    async fn execute_with_breaker<F, Fut>(
+        breaker: &circuit_breaker::CircuitBreaker,
+        address: &str,
+        core: &Core<C>,
+        execute: F,
+    ) -> Result<Response, (OperationTarget, RedisError)>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = RedisResult<Response>>,
+    {
+        let is_probe = breaker.on_entry().map_err(|err| {
+            (
+                OperationTarget::Node {
+                    address: address.to_string(),
+                },
+                err,
+            )
+        })?;
+
+        let result = execute().await;
+
+        let just_tripped = breaker.on_result(is_probe, result.as_ref().err());
+        if just_tripped {
+            core.conn_lock.read().remove_node(&address.to_string());
+            log_warn_lazy!(
+                "circuit_breaker",
+                format!(
+                    "Dropped connection to {} to release in-flight commands",
+                    address
+                )
+            );
+        }
+
+        result.map_err(|err| (address.to_string().into(), err))
+    }
+
     pub(crate) async fn try_cmd_request(
         cmd: Arc<Cmd>,
         routing: InternalRoutingInfo<C>,
@@ -3018,50 +3081,14 @@ where
             .await
             .map_err(|err| (OperationTarget::NotFound, err))?;
 
-        let cb_config = core.get_cluster_param(|p| p.circuit_breaker.clone());
-
-        if let Some(ref config) = cb_config {
-            let breaker = core
-                .circuit_breakers
-                .entry(address.clone())
-                .or_insert_with(|| {
-                    Arc::new(circuit_breaker::CircuitBreaker::new(
-                        config.clone(),
-                        address.clone(),
-                    ))
-                })
-                .clone();
-
-            let is_probe = breaker.on_entry().map_err(|err| {
-                (
-                    OperationTarget::Node {
-                        address: address.clone(),
-                    },
-                    err,
-                )
-            })?;
-
+        if let Some(breaker) = Self::resolve_breaker(&core, &address) {
             if let Some(span) = cmd.span() {
                 set_routed_node_on_span(&span, &address);
             }
-
-            let result = conn.req_packed_command(&cmd).await;
-
-            let just_tripped = breaker.on_result(is_probe, result.as_ref().err());
-            if just_tripped {
-                core.conn_lock.read().remove_node(&address);
-                log_warn_lazy!(
-                    "circuit_breaker",
-                    format!(
-                        "Dropped connection to {} to release in-flight commands",
-                        address
-                    )
-                );
-            }
-
-            result
-                .map(Response::Single)
-                .map_err(|err| (address.into(), err))
+            Self::execute_with_breaker(&breaker, &address, &core, || async {
+                conn.req_packed_command(&cmd).await.map(Response::Single)
+            })
+            .await
         } else {
             if let Some(span) = cmd.span() {
                 set_routed_node_on_span(&span, &address);
@@ -3086,52 +3113,16 @@ where
         log_trace_lazy!("cluster", "try_pipeline_request");
         let (address, mut conn) = conn.await.map_err(|err| (OperationTarget::NotFound, err))?;
 
-        let cb_config = core.get_cluster_param(|p| p.circuit_breaker.clone());
-
-        if let Some(ref config) = cb_config {
-            let breaker = core
-                .circuit_breakers
-                .entry(address.clone())
-                .or_insert_with(|| {
-                    Arc::new(circuit_breaker::CircuitBreaker::new(
-                        config.clone(),
-                        address.clone(),
-                    ))
-                })
-                .clone();
-
-            let is_probe = breaker.on_entry().map_err(|err| {
-                (
-                    OperationTarget::Node {
-                        address: address.clone(),
-                    },
-                    err,
-                )
-            })?;
-
+        if let Some(breaker) = Self::resolve_breaker(&core, &address) {
             if let Some(span) = pipeline.span() {
                 set_routed_node_on_span(&span, &address);
             }
-
-            let result = conn
-                .req_packed_commands(&pipeline, offset, count, None)
-                .await;
-
-            let just_tripped = breaker.on_result(is_probe, result.as_ref().err());
-            if just_tripped {
-                core.conn_lock.read().remove_node(&address);
-                log_warn_lazy!(
-                    "circuit_breaker",
-                    format!(
-                        "Dropped connection to {} to release in-flight commands",
-                        address
-                    )
-                );
-            }
-
-            result
-                .map(Response::Multiple)
-                .map_err(|err| (OperationTarget::Node { address }, err))
+            Self::execute_with_breaker(&breaker, &address, &core, || async {
+                conn.req_packed_commands(&pipeline, offset, count, None)
+                    .await
+                    .map(Response::Multiple)
+            })
+            .await
         } else {
             if let Some(span) = pipeline.span() {
                 set_routed_node_on_span(&span, &address);
