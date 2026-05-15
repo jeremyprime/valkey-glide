@@ -1,0 +1,76 @@
+name: circuit-breaker-test
+
+services:
+  node-1:
+    image: valkey/valkey:8
+    container_name: cb-node-1
+    command: >
+      valkey-server
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --port 6379
+      --bind 0.0.0.0
+    networks:
+      cb-net:
+        ipv4_address: 172.32.0.11
+
+  node-2:
+    image: valkey/valkey:8
+    container_name: cb-node-2
+    command: >
+      valkey-server
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --port 6379
+      --bind 0.0.0.0
+    networks:
+      cb-net:
+        ipv4_address: 172.32.0.12
+
+  node-3:
+    image: valkey/valkey:8
+    container_name: cb-node-3
+    command: >
+      valkey-server
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 5000
+      --port 6379
+      --bind 0.0.0.0
+    networks:
+      cb-net:
+        ipv4_address: 172.32.0.13
+
+  cluster-init:
+    image: valkey/valkey:8
+    container_name: cb-cluster-init
+    depends_on:
+      - node-1
+      - node-2
+      - node-3
+    command: >
+      sh -c "sleep 3 && valkey-cli --cluster create 172.32.0.11:6379 172.32.0.12:6379 172.32.0.13:6379 --cluster-replicas 0 --cluster-yes"
+    networks:
+      - cb-net
+    restart: "no"
+
+  test-runner:
+    build: .
+    container_name: cb-test-runner
+    depends_on:
+      cluster-init:
+        condition: service_completed_successfully
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - cb-net
+    restart: "no"
+
+networks:
+  cb-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.32.0.0/16
