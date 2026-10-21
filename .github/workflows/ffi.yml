@@ -26,6 +26,7 @@ on:
             - .github/actions/install-shared-dependencies/action.yml
             - .github/actions/install-zig/action.yml
             - .github/workflows/lint-rust/action.yml
+            - "!**/*.md"
     pull_request:
         paths:
             - ffi/**
@@ -44,6 +45,7 @@ on:
             - .github/actions/install-shared-dependencies/action.yml
             - .github/actions/install-zig/action.yml
             - .github/workflows/lint-rust/action.yml
+            - "!**/*.md"
     workflow_dispatch:
     workflow_call:
 

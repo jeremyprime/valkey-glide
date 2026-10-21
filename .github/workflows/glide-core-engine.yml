@@ -24,6 +24,7 @@ on:
             - .github/actions/install-rust/action.yml
             - .github/actions/install-shared-dependencies/action.yml
             - .github/actions/install-zig/action.yml
+            - "!**/*.md"
     pull_request:
         paths:
             - glide-core/redis-rs/**
@@ -40,6 +41,7 @@ on:
             - .github/actions/install-rust/action.yml
             - .github/actions/install-shared-dependencies/action.yml
             - .github/actions/install-zig/action.yml
+            - "!**/*.md"
     workflow_dispatch:
         inputs:
             use-self-hosted-linux:

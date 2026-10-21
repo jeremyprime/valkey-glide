@@ -21,6 +21,7 @@ on:
             - .github/actions/install-protoc/action.yml
             - .github/actions/install-rust/action.yml
             - .github/workflows/lint-rust/action.yml
+            - "!**/*.md"
     pull_request:
         paths:
             - glide-telemetry/**
@@ -34,6 +35,7 @@ on:
             - .github/actions/install-protoc/action.yml
             - .github/actions/install-rust/action.yml
             - .github/workflows/lint-rust/action.yml
+            - "!**/*.md"
     workflow_dispatch:
     workflow_call:
 

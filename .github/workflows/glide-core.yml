@@ -33,6 +33,7 @@ on:
             - benchmarks/install_and_test.sh
             - benchmarks/utilities/**
             - utils/cluster_manager.py
+            - "!**/*.md"
     pull_request:
         paths:
             - glide-core/**
@@ -58,6 +59,7 @@ on:
             - benchmarks/install_and_test.sh
             - benchmarks/utilities/**
             - utils/cluster_manager.py
+            - "!**/*.md"
     workflow_dispatch:
         inputs:
             full-matrix:

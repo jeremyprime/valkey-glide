@@ -14,12 +14,14 @@ on:
             - node/**
             - benchmarks/utilities/*
             - .github/workflows/lint-ts.yml
+            - "!**/*.md"
     pull_request:
         paths:
             - benchmarks/node/**
             - node/**
             - benchmarks/utilities/*
             - .github/workflows/lint-ts.yml
+            - "!**/*.md"
     workflow_dispatch:
 
 concurrency:

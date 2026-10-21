@@ -27,6 +27,7 @@ on:
             - .github/actions/install-zig/action.yml
             - .github/workflows/lint-rust/action.yml
             - utils/cluster_manager.py
+            - "!**/*.md"
     pull_request:
         paths:
             - rust/**
@@ -46,6 +47,7 @@ on:
             - .github/actions/install-zig/action.yml
             - .github/workflows/lint-rust/action.yml
             - utils/cluster_manager.py
+            - "!**/*.md"
     workflow_dispatch:
     workflow_call:
 
